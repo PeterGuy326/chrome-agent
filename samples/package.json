@@ -1,0 +1,23 @@
+{
+  "name": "chrome-agent-samples",
+  "version": "1.0.0",
+  "description": "Chrome Agent 使用示例",
+  "main": "basic-example.js",
+  "scripts": {
+    "basic": "node basic-example.js",
+    "extract": "node data-extraction-example.js",
+    "server": "node api-server-example.js",
+    "example": "npm run basic"
+  },
+  "keywords": [
+    "chrome-agent",
+    "automation",
+    "puppeteer",
+    "web-scraping"
+  ],
+  "author": "Chrome Agent Team",
+  "license": "MIT",
+  "dependencies": {
+    "chrome-agent": "file:.."
+  }
+}

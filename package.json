@@ -1,0 +1,65 @@
+{
+  "name": "chrome-agent",
+  "version": "1.0.0",
+  "description": "Chrome Agent - 基于Node.js + Puppeteer的网页自动化智能工具",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "chrome-agent": "./bin/chrome-agent"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "automation",
+    "puppeteer",
+    "web-scraping",
+    "ai-agent",
+    "natural-language"
+  ],
+  "author": "Chrome Agent Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12",
+    "commander": "^13.1.0",
+    "cors": "^2.8.5",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.0.1",
+    "helmet": "^7.2.0",
+    "joi": "^17.11.0",
+    "openai": "^4.24.1",
+    "puppeteer": "^21.6.1",
+    "uuid": "^9.0.1",
+    "winston": "^3.11.0",
+    "@langchain/community": "^0.0.32",
+    "@langchain/core": "^0.1.48",
+    "@langchain/openai": "^0.0.19",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.23",
+    "@types/jest": "^29.5.8",
+    "@types/node": "^20.10.4",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^6.13.1",
+    "@typescript-eslint/parser": "^6.13.1",
+    "eslint": "^8.54.0",
+    "jest": "^29.7.0",
+    "rimraf": "^5.0.5",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+
+/**
+ * Chrome Agent CLI 可执行文件
+ */
+
+const path = require('path');
+
+// 设置模块路径
+const cliPath = path.join(__dirname, '../dist/cli/index.js');
+
+// 检查构建文件是否存在
+const fs = require('fs');
+if (!fs.existsSync(cliPath)) {
+  console.error('Error: CLI not built. Please run "npm run build" first.');
+  process.exit(1);
+}
+
+// 运行CLI
+const cli = require(cliPath);
+if (cli && cli.program && typeof cli.program.parse === 'function') {
+  cli.program.parse(process.argv);
+}
