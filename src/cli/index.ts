@@ -33,7 +33,7 @@ program
   .option('-u, --url <url>', '目标网页URL')
   .option('-o, --output <file>', '输出文件路径')
   .option('-f, --format <format>', '输出格式 (json|csv|xml)', 'json')
-  .option('-h, --headless', '无头模式运行', false)
+  // .option('-h, --headless', '无头模式运行', false) // 已禁用：默认使用有头模式
   .option('-w, --wait <ms>', '等待时间（毫秒）', '3000')
   .option('-v, --verbose', '详细输出', false)
   .option('--ai', '启用基于AI的意图解析', false)
@@ -72,7 +72,7 @@ program
  
       // 执行任务
       const executor = new Executor({
-        headless: options.headless,
+        // headless: options.headless, // 已禁用：默认有头模式
         timeout: parseInt(options.wait),
         executablePath: options.executablePath,
         stealth: options.stealth ? true : undefined,
@@ -107,7 +107,7 @@ program
         console.log(JSON.stringify(result, null, 2));
       }
 
-      await executor.close();
+      // 保持浏览器与页面开启，便于用户和AI共同操作
     } catch (error) {
       logger.error('任务执行失败', { error });
       process.exit(1);
@@ -125,7 +125,7 @@ program
   .option('-r, --rule <file>', '抽取规则文件')
   .option('-o, --output <file>', '输出文件路径')
   .option('-f, --format <format>', '输出格式 (json|csv|xml)', 'json')
-  .option('-h, --headless', '无头模式运行', false)
+  // .option('-h, --headless', '无头模式运行', false) // 已禁用：默认使用有头模式
   .option('-v, --verbose', '详细输出', false)
   .action(async (url: string, options: any) => {
     try {
@@ -135,9 +135,7 @@ program
       await initializeStorage();
 
       // 初始化执行器
-      const executor = new Executor({
-        headless: options.headless
-      });
+      const executor = new Executor({});
 
       await executor.initialize();
       
@@ -227,13 +225,12 @@ program
       } else {
         console.log(JSON.stringify(result, null, 2));
       }
-
-      await executor.close();
-    } catch (error) {
-      logger.error('数据抽取失败', { error });
-      process.exit(1);
-    }
-  });
+      // 保持浏览器与页面开启，便于用户和AI共同操作
+      } catch (error) {
+        logger.error('数据抽取失败', { error });
+        process.exit(1);
+      }
+    });
 
 /**
  * 生成示例命令
@@ -480,7 +477,7 @@ async function extractionExample() {
   } catch (error) {
     console.error('错误:', error);
   } finally {
-    await executor.close();
+    // 保持浏览器开启以便后续人工/AI交互
   }
 }
 
@@ -521,7 +518,7 @@ async function automationExample() {
   } catch (error) {
     console.error('错误:', error);
   } finally {
-    await executor.close();
+    // 保持浏览器开启以便后续人工/AI交互
   }
 }
 

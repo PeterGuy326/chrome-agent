@@ -286,16 +286,16 @@ export class Executor {
       
       this.logger.info(`Plan execution completed: ${success ? 'SUCCESS' : 'FAILED'} (${duration}ms)`);
       
-      // 清理资源
-      await this.cleanupContext(planId);
+      // 清理资源（已禁用，保留页面与浏览器以便交互）
+      // await this.cleanupContext(planId);
       
       return result;
       
     } catch (error) {
       this.logger.error('Plan execution failed:', error);
       
-      // 清理资源
-      await this.cleanupContext(planId);
+      // 清理资源（已禁用，保留页面与浏览器以便交互）
+      // await this.cleanupContext(planId);
       
       throw this.errorHandler.createError(
         ErrorCode.PLAN_EXECUTION_FAILED,
