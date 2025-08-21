@@ -15,7 +15,8 @@ const logger = getDefaultLogger();
 export enum AIProvider {
   OPENAI = 'openai',
   DEEPSEEK = 'deepseek',
-  CUSTOM = 'custom'
+  CUSTOM = 'custom',
+  MODELSCOPE = 'modelscope'
 }
 
 /**
@@ -32,6 +33,8 @@ export interface AIConfig {
   topP?: number;
   systemPrompt?: string;
   timeout?: number;
+  intentModel?: string;
+  plannerModel?: string;
 }
 
 /**
@@ -86,9 +89,14 @@ export class AIClientManager {
         maxTokens: await quickGetConfigValue<number>('ai.maxTokens') ?? 2048,
         topP: await quickGetConfigValue<number>('ai.topP') ?? 1,
         systemPrompt: await quickGetConfigValue<string>('ai.systemPrompt') ?? '',
-        timeout: await quickGetConfigValue<number>('ai.timeout') ?? 60000
+        timeout: await quickGetConfigValue<number>('ai.timeout') ?? 60000,
+        intentModel: await quickGetConfigValue<string>('ai.intentModel') ?? undefined,
+        plannerModel: await quickGetConfigValue<string>('ai.plannerModel') ?? undefined
       };
 
+      if (this.config.provider === AIProvider.MODELSCOPE && !this.config.baseUrl) {
+        throw new Error('AI provider "modelscope" requires baseUrl. Please set --baseUrl or MODELSCOPE_BASE_URL.');
+      }
       // 创建 OpenAI 客户端
       const clientConfig: any = {
         apiKey: this.config.apiKey,
@@ -126,7 +134,7 @@ export class AIClientManager {
 
     try {
       const response = await this.client.chat.completions.create({
-        model: this.config.model,
+        model: this.config.intentModel || this.config.plannerModel || this.config.model,
         messages: [
           { role: 'user', content: 'Test connection' }
         ],

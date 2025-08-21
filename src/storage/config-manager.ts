@@ -91,7 +91,7 @@ export interface AppConfig {
   // AI/LLM 配置
   ai: {
     enabled: boolean;
-    provider: 'openai' | 'deepseek' | 'custom';
+    provider: 'openai' | 'deepseek' | 'custom' | 'modelscope';
     model: string;
     baseUrl?: string;
     apiKey?: string;
@@ -100,23 +100,23 @@ export interface AppConfig {
     topP: number;
     systemPrompt?: string;
     timeout: number;
+    intentModel?: string;
+    plannerModel?: string;
     // 新增：Planner 参数化重试与严格提示
-    planner?: {
-      retry?: {
-        maxAttempts?: number; // LLM 规划调用的最大总尝试次数（含首次）
-        temperatureStepDown?: number; // 每次重试温度降低幅度
-      };
-      strictPrompt?: string; // 重试时追加的更严格提示内容
-    };
-  };
-
-  // 插件配置
+    planner: {
+      retry: {
+        maxAttempts: 2,
+        temperatureStepDown: 0.2
+      },
+      strictPrompt: '严格只输出一个 JSON 对象（UTF-8），不要使用反引号、不要使用 Markdown 代码块、不要输出任何解释或额外文本；如果无法完全确定选择器，保持 selectorCandidates 为 [] 或给出低置信度候选；若 JSON 校验失败，请立即纠正并重新生成可被 JSON.parse 解析的结果。'
+    }
+  },
   plugins: {
-    enabled: string[];
-    disabled: string[];
-    config: Record<string, any>;
-  };
-}
+    enabled: [],
+    disabled: [],
+    config: {}
+  }
+};
 
 export interface ConfigValidationRule {
   path: string;
@@ -220,20 +220,31 @@ export class ConfigManager {
       ai: {
         enabled: true,
         provider: (process.env.AI_PROVIDER as any) || 'openai',
-        model: (process.env.AI_PROVIDER || 'openai') === 'deepseek' 
-          ? (process.env.DEEPSEEK_MODEL || 'deepseek-chat') 
-          : (process.env.OPENAI_MODEL || 'gpt-3.5-turbo'),
-        baseUrl: (process.env.AI_PROVIDER || 'openai') === 'deepseek' 
-          ? (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1')
-          : (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'),
-        apiKey: (process.env.AI_PROVIDER || 'openai') === 'deepseek' 
-          ? process.env.DEEPSEEK_API_KEY 
-          : process.env.OPENAI_API_KEY,
+        model: (() => {
+          const p = process.env.AI_PROVIDER || 'openai';
+          if (p === 'deepseek') return process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+          if (p === 'modelscope') return process.env.MODELSCOPE_MODEL || process.env.AI_MODEL || 'gpt-3.5-turbo';
+          return process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
+        })(),
+        baseUrl: (() => {
+          const p = process.env.AI_PROVIDER || 'openai';
+          if (p === 'deepseek') return process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+          if (p === 'modelscope') return process.env.MODELSCOPE_BASE_URL;
+          return process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+        })(),
+        apiKey: (() => {
+          const p = process.env.AI_PROVIDER || 'openai';
+          if (p === 'deepseek') return process.env.DEEPSEEK_API_KEY;
+          if (p === 'modelscope') return process.env.MODELSCOPE_API_KEY || process.env.AI_API_KEY;
+          return process.env.OPENAI_API_KEY;
+        })(),
         temperature: parseFloat(process.env.AI_TEMPERATURE || '0.2'),
         maxTokens: parseInt(process.env.AI_MAX_TOKENS || '2048', 10),
         topP: parseFloat(process.env.AI_TOP_P || '1'),
         systemPrompt: process.env.AI_SYSTEM_PROMPT,
         timeout: parseInt(process.env.AI_TIMEOUT || '60000', 10),
+        intentModel: process.env.AI_INTENT_MODEL || ((process.env.AI_PROVIDER || 'openai') === 'modelscope' ? 'deepseek-ai/DeepSeek-V2-Lite-Chat' : undefined),
+        plannerModel: process.env.AI_PLANNER_MODEL || ((process.env.AI_PROVIDER || 'openai') === 'modelscope' ? 'deepseek-ai/DeepSeek-V3.1' : undefined),
         // 新增默认 Planner 配置
         planner: {
           retry: {
@@ -427,7 +438,7 @@ export class ConfigManager {
 
       // AI/LLM 配置验证
       { path: 'ai.enabled', type: 'boolean', required: true },
-      { path: 'ai.provider', type: 'string', required: true, enum: ['openai', 'deepseek', 'custom'] },
+      { path: 'ai.provider', type: 'string', required: true, enum: ['openai', 'deepseek', 'custom', 'modelscope'] },
       { path: 'ai.model', type: 'string', required: true },
       { path: 'ai.temperature', type: 'number', required: true, min: 0, max: 2 },
       { path: 'ai.maxTokens', type: 'number', required: true, min: 1, max: 200000 },

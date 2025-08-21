@@ -13,6 +13,9 @@ import { Planner } from '../planner/planner';
 import { Executor } from '../executor/executor';
 import { DataExtractor } from '../extractor/extractor';
 import { initializeStorage } from '../storage';
+import * as readline from 'readline';
+import { getDefaultEventBus } from '../core/event-bus';
+import { EventType } from '../core/types';
 
 const logger = getDefaultLogger();
 const program = new Command();
@@ -37,7 +40,12 @@ program
   .option('-w, --wait <ms>', '等待时间（毫秒）', '3000')
   .option('-v, --verbose', '详细输出', false)
   .option('--ai', '启用基于AI的意图解析', false)
-  .option('--provider <provider>', 'AI提供商 (openai|deepseek|custom)')
+  .option('--provider <provider>', 'AI提供商 (openai|deepseek|custom|modelscope)')
+  .option('--model <model>', 'AI 模型')
+  .option('--baseUrl <url>', 'AI Base URL')
+  .option('--apiKey <key>', 'AI API Key')
+  .option('--intentModel <model>', 'AI 模型（用于意图解析）')
+  .option('--plannerModel <model>', 'AI 模型（用于步骤规划）')
   .option('--executablePath <path>', 'Chrome/Chromium 可执行文件路径')
   .option('--stealth', '启用 stealth 反爬插件', false)
   .option('--devtools', '启动时打开 DevTools', false)
@@ -54,6 +62,65 @@ program
       // 初始化存储
       await initializeStorage();
  
+      // 在初始化 AI 之前，根据 CLI 选项动态更新配置
+      const { quickSetConfigValue } = await import('../storage');
+      if (options.ai) {
+        await quickSetConfigValue('ai.enabled', true);
+      }
+      if (options.provider) {
+        await quickSetConfigValue('ai.provider', options.provider);
+      }
+      if (options.model) {
+        await quickSetConfigValue('ai.model', options.model);
+      }
+      if (options.intentModel) {
+        await quickSetConfigValue('ai.intentModel', options.intentModel);
+      }
+      if (options.plannerModel) {
+        await quickSetConfigValue('ai.plannerModel', options.plannerModel);
+      }
+      if (options.baseUrl) {
+        await quickSetConfigValue('ai.baseUrl', options.baseUrl);
+      }
+      if (options.apiKey) {
+        await quickSetConfigValue('ai.apiKey', options.apiKey);
+      } else if (options.ai) {
+        // 环境变量兜底（按 provider 优先）
+        const prov = options.provider || process.env.AI_PROVIDER;
+        const envApiKey = prov === 'deepseek' ? process.env.DEEPSEEK_API_KEY
+          : prov === 'modelscope' ? process.env.MODELSCOPE_API_KEY || process.env.AI_API_KEY
+          : process.env.OPENAI_API_KEY || process.env.AI_API_KEY;
+        if (envApiKey) {
+          await quickSetConfigValue('ai.apiKey', envApiKey);
+        }
+        const envBaseUrl = prov === 'deepseek' ? (process.env.DEEPSEEK_BASE_URL || process.env.AI_BASE_URL)
+          : prov === 'modelscope' ? process.env.MODELSCOPE_BASE_URL
+          : (process.env.OPENAI_BASE_URL || process.env.AI_BASE_URL);
+        if (envBaseUrl) {
+          await quickSetConfigValue('ai.baseUrl', envBaseUrl);
+        }
+        const envModel = prov === 'deepseek' ? (process.env.DEEPSEEK_MODEL || process.env.AI_MODEL)
+          : prov === 'modelscope' ? (process.env.MODELSCOPE_MODEL || process.env.AI_MODEL)
+          : (process.env.OPENAI_MODEL || process.env.AI_MODEL);
+        if (envModel) {
+          await quickSetConfigValue('ai.model', envModel);
+        }
+      }
+
+      // 若选择了 modelscope，且未指定 intent/planner 模型，使用用户期望的默认
+      if ((options.provider === 'modelscope' || process.env.AI_PROVIDER === 'modelscope')) {
+      const { quickGetConfigValue } = await import('../storage');
+      const intentModelCurrent = await quickGetConfigValue<string>('ai.intentModel');
+      const plannerModelCurrent = await quickGetConfigValue<string>('ai.plannerModel');
+      if (!intentModelCurrent) {
+      await quickSetConfigValue('ai.intentModel', 'deepseek-ai/DeepSeek-V2-Lite-Chat');
+      }
+      if (!plannerModelCurrent) {
+      await quickSetConfigValue('ai.plannerModel', 'deepseek-ai/DeepSeek-V3.1');
+      }
+      }
+      // 对于 modelscope，不再自动设置默认模型，请通过 --baseUrl/--model/--intentModel/--plannerModel 明确指定
+      
       // 初始化 AI（确保 AIClientManager 预先加载配置并建立连接）
       const { initializeAI } = await import('../ai/config');
       await initializeAI();
@@ -71,17 +138,18 @@ program
       logger.debug('执行计划', { plan });
  
       // 执行任务
+      const executablePath = options.executablePath || process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH;
       const executor = new Executor({
         // headless: options.headless, // 已禁用：默认有头模式
         timeout: parseInt(options.wait),
-        executablePath: options.executablePath,
+        executablePath,
         stealth: options.stealth ? true : undefined,
         devtools: options.devtools,
         slowMo: parseInt(options.slowMo || '0'),
         locale: options.lang,
         languages: options.lang ? [options.lang] : undefined,
         timezone: options.tz,
-        userDataDir: options.userDataDir,
+        userDataDir: options.userDataDir || path.resolve(process.cwd(), 'data/user-data'),
         userAgent: options.userAgent || undefined,
         extraHeaders: (options.header || []).reduce((acc: any, kv: string) => {
           const idx = kv.indexOf(':');
@@ -671,9 +739,133 @@ chrome-agent serve --port 3000
   await fs.writeFile(path.join(dir, 'README.md'), content);
 }
 
+// 新增：会话模式实现
+async function startSession(): Promise<void> {
+  const eventBus = getDefaultEventBus();
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  console.log('Chrome Agent 会话模式已启动');
+  console.log('- 输入自然语言指令，我会规划并在 Chrome 中逐步执行');
+  console.log('- 实时显示执行到第几步，以及步骤结果');
+  console.log('- 输入 help 查看帮助，exit/quit 退出会话，close 关闭浏览器');
+
+  // 初始化依赖
+  await initializeStorage();
+  const { initializeAI } = await import('../ai/config');
+  await initializeAI();
+
+  const executor = new Executor({
+    // 默认以有头模式运行，便于观察
+    devtools: false,
+    slowMo: 0,
+    stealth: false,
+    userDataDir: path.resolve(process.cwd(), 'data/user-data'),
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_PATH
+  });
+  await executor.initialize();
+
+  rl.setPrompt('chrome-agent> ');
+  rl.prompt();
+
+  rl.on('line', async (line) => {
+    const input = line.trim();
+    if (!input) { rl.prompt(); return; }
+
+    if (input === 'help') {
+      console.log('可用命令:');
+      console.log('- 直接输入自然语言指令，例如：打开淘宝搜索 iPhone');
+      console.log('- exit/quit: 退出会话（浏览器保持开启）');
+      console.log('- close: 关闭浏览器（不建议在协同操作时使用）');
+      rl.prompt();
+      return;
+    }
+
+    if (input === 'exit' || input === 'quit') {
+      console.log('已退出会话。浏览器将保持开启以便后续人工/AI交互。');
+      rl.close();
+      return;
+    }
+
+    if (input === 'close') {
+      try {
+        await executor.close();
+        console.log('浏览器已关闭。');
+      } catch (e) {
+        console.error('关闭浏览器失败：', e);
+      }
+      rl.prompt();
+      return;
+    }
+
+    try {
+      console.log('理解意图中...');
+      const { AIIntentParser } = await import('../ai/intent-parser');
+      const aiParser = new AIIntentParser();
+      const intents = await aiParser.parseIntent(input, { currentUrl: undefined });
+
+      console.log('正在规划步骤...');
+      const planner = new Planner();
+      const taskId = `task_${Date.now()}`;
+      const plan = await planner.generatePlan(taskId, intents, {});
+
+      // 展示计划
+      const orderedSteps = [...plan.steps].sort((a, b) => a.order - b.order);
+      console.log(`规划完成，共 ${orderedSteps.length} 步：`);
+      orderedSteps.forEach((s, i) => console.log(`  ${i + 1}. ${s.description}`));
+
+      // 订阅执行进度事件
+      const stepDescMap = new Map(plan.steps.map(s => [s.id, s.description]));
+      const unsubscribeInit = eventBus.subscribe(EventType.EXECUTOR_INITIALIZED, (ev: any) => {
+        const pid = ev?.data?.browserId ?? '-';
+        console.log(`执行器已初始化，浏览器PID: ${pid}`);
+      });
+      const unsubscribeStep = eventBus.subscribe(EventType.EXECUTOR_STEP_COMPLETED, (ev: any) => {
+        const { stepId, stepResult, progress } = ev.data || {};
+        const desc = stepDescMap.get(stepId) || stepId;
+        const pct = Math.round(((progress || 0) * 100));
+        const status = stepResult?.success ? '成功' : '失败';
+        console.log(`步骤完成: ${desc} -> ${status}（进度 ${pct}%）`);
+      });
+
+      console.log('开始执行...');
+      const result = await executor.executePlan(plan);
+
+      // 取消订阅
+      unsubscribeInit();
+      unsubscribeStep();
+
+      // 会话内总结
+      console.log('—— 执行总结 ——');
+      if (result.success) {
+        console.log(`成功完成 ${result.successfulSteps}/${result.totalSteps} 步，耗时 ${result.duration}ms`);
+        if (result.finalUrl) console.log(`最终页面：${result.finalUrl}`);
+      } else {
+        console.log(`执行失败：成功 ${result.successfulSteps}/${result.totalSteps} 步，失败 ${result.failedSteps} 步`);
+        if (result.error) console.log(`错误：${result.error}`);
+      }
+      if (result.screenshots?.length) {
+        console.log(`截图数量：${result.screenshots.length}`);
+      }
+
+      rl.prompt();
+    } catch (err) {
+      console.error('执行失败：', err instanceof Error ? err.message : err);
+      rl.prompt();
+    }
+  });
+}
+
 // 如果直接运行此文件，则解析命令行参数
 if (require.main === module) {
-  program.parse();
+  if (process.argv.length <= 2) {
+    // 无子命令，进入会话模式
+    startSession().catch(err => {
+      logger.error('会话模式启动失败', { error: err });
+      process.exit(1);
+    });
+  } else {
+    program.parse();
+  }
 }
 
 export { program };

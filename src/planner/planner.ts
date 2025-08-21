@@ -342,11 +342,12 @@ export class Planner {
         }
 
         const resp = await client.chat.completions.create({
-          model: cfg.model,
+          model: cfg.plannerModel || cfg.model,
           messages,
           temperature: currentTemperature,
           max_tokens: cfg.maxTokens ?? 2048,
-          top_p: cfg.topP ?? 1
+          top_p: cfg.topP ?? 1,
+          response_format: { type: 'json_object' }
         });
 
         const text = resp.choices?.[0]?.message?.content || '';

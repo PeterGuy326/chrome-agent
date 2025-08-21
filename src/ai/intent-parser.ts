@@ -61,7 +61,7 @@ export class AIIntentParser {
   
        const prompt = this.buildPrompt(text, context);
        const response = await this.client.chat.completions.create({
-         model: getAIClientManager().getConfig().model,
+         model: getAIClientManager().getConfig().intentModel || getAIClientManager().getConfig().model,
          messages: [
            { role: 'system', content: this.systemPrompt },
            { role: 'user', content: prompt }

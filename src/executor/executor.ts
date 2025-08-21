@@ -144,6 +144,9 @@ export class Executor {
       const envExecutable = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
       const executablePath = this.config.executablePath || envExecutable;
 
+      // Prefer system Chrome channel when no explicit executablePath provided
+      const channel = process.env.PUPPETEER_CHANNEL || (process.platform === 'darwin' ? 'chrome' : (process.platform === 'win32' ? 'chrome' : 'chromium'));
+
       const launchOptions: any = {
         headless: this.config.headless,
         args: [
@@ -165,6 +168,9 @@ export class Executor {
       if (executablePath) {
         launchOptions.executablePath = executablePath;
         this.logger.info('Using custom Chrome executable', { executablePath });
+      } else if (channel) {
+        launchOptions.channel = channel;
+        this.logger.info('Using browser channel', { channel });
       }
       
       this.browser = (await puppeteerLib.launch(launchOptions)) as unknown as Browser;
@@ -177,7 +183,7 @@ export class Executor {
       });
     } catch (error) {
       // 更详细的错误日志，便于排查
-      const err = error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error;
+      const err = error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { raw: String(error) };
       this.logger.error('Failed to initialize browser:', err as any);
       throw this.errorHandler.createError(
         ErrorCode.BROWSER_LAUNCH_ERROR,
