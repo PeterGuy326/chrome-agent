@@ -38,6 +38,15 @@ program
   .option('-v, --verbose', '详细输出', false)
   .option('--ai', '启用基于AI的意图解析', false)
   .option('--provider <provider>', 'AI提供商 (openai|deepseek|custom)')
+  .option('--executablePath <path>', 'Chrome/Chromium 可执行文件路径')
+  .option('--stealth', '启用 stealth 反爬插件', false)
+  .option('--devtools', '启动时打开 DevTools', false)
+  .option('--slowMo <ms>', '放慢操作节奏（毫秒）', '0')
+  .option('--lang <lang>', '浏览器语言/Accept-Language（如 zh-CN）')
+  .option('--tz <timezone>', '浏览器时区（如 Asia/Shanghai）')
+  .option('--userDataDir <dir>', '用户数据目录（持久化会话）')
+  .option('--userAgent <ua>', '自定义 User-Agent')
+  .option('--header <k:v...>', '额外请求头，支持重复传入多个', (val: string, memo: string[]) => { memo.push(val); return memo; }, [] as string[])
   .action(async (task: string, options: any) => {
     try {
       logger.info('开始执行任务', { task, options });
@@ -64,7 +73,25 @@ program
       // 执行任务
       const executor = new Executor({
         headless: options.headless,
-        timeout: parseInt(options.wait)
+        timeout: parseInt(options.wait),
+        executablePath: options.executablePath,
+        stealth: options.stealth ? true : undefined,
+        devtools: options.devtools,
+        slowMo: parseInt(options.slowMo || '0'),
+        locale: options.lang,
+        languages: options.lang ? [options.lang] : undefined,
+        timezone: options.tz,
+        userDataDir: options.userDataDir,
+        userAgent: options.userAgent || undefined,
+        extraHeaders: (options.header || []).reduce((acc: any, kv: string) => {
+          const idx = kv.indexOf(':');
+          if (idx > 0) {
+            const k = kv.slice(0, idx).trim();
+            const v = kv.slice(idx + 1).trim();
+            acc[k] = v;
+          }
+          return acc;
+        }, {} as Record<string, string>)
       });
 
       await executor.initialize();

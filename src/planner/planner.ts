@@ -19,6 +19,8 @@ import {
 import { ParsedIntent } from '../core/types';
 import { getDefaultLogger } from '../core/logger';
 import { getDefaultEventBus } from '../core/event-bus';
+import { getAIClient, getAIClientManager } from '../ai/config'
+import { quickGetConfigValue } from '../storage';
 
 export interface PlanningContext {
   currentUrl?: string;
@@ -62,63 +64,483 @@ export class Planner {
   }
 
   /**
-   * 生成执行计划
+   * 生成执行计划（纯 AI 版本）
    */
   async generatePlan(
     taskId: string,
     intents: ParsedIntent[],
     context?: PlanningContext
   ): Promise<Plan> {
-    this.logger.info('Generating plan', { taskId, intentsCount: intents.length });
+    this.logger.info('Generating plan (AI-only)', { taskId, intentsCount: intents.length });
 
     if (intents.length === 0) {
       throw new Error('No intents provided for planning');
     }
 
-    // 选择最佳策略
-    const strategy = this.selectBestStrategy(intents[0], context);
-    if (!strategy) {
-      throw new Error('No suitable planning strategy found');
-    }
+    // 内联工具函数：提取 JSON、归一化动作/等待
+    const extractJsonBlock = (s: string) => {
+      const start = s.indexOf('{');
+      const end = s.lastIndexOf('}');
+      if (start >= 0 && end > start) return s.slice(start, end + 1);
+      return s;
+    };
 
-    this.logger.debug(`Selected strategy: ${strategy.name}`, { strategyId: strategy.id });
+    const normalizeAction = (a?: string): ActionType => {
+      if (!a) return ActionType.WAIT;
+      const key = a.toUpperCase();
+      if ((ActionType as any)[key]) return (ActionType as any)[key] as ActionType;
+      if (key === 'PRESS' || key === 'PRESSKEY') return ActionType.PRESS_KEY;
+      return ActionType.WAIT;
+    };
 
-    // 生成步骤
-    const allSteps: Step[] = [];
-    let stepOrder = 0;
+    const normalizeWait = (wait: any, action: ActionType) => {
+      const rawType = (wait?.type || (action === ActionType.NAVIGATE ? 'NAVIGATION' : 'ELEMENT')).toString().toUpperCase();
+      const type = (WaitType as any)[rawType] ?? (action === ActionType.NAVIGATE ? WaitType.NAVIGATION : WaitType.ELEMENT);
+      const timeout = typeof wait?.timeout === 'number' ? wait.timeout : (action === ActionType.NAVIGATE ? 30000 : 5000);
+      const value = wait?.value;
+      return { type, timeout, value } as WaitCondition;
+    };
 
-    for (const intent of intents) {
-      const steps = strategy.generateSteps(intent, context);
-      
-      // 更新步骤顺序和ID
-      for (const step of steps) {
-        step.order = stepOrder++;
-        step.id = `${taskId}_step_${step.order}`;
-        allSteps.push(step);
+    // 调用 LLM 生成步骤
+    const client = getAIClient();
+    const cfg = getAIClientManager().getConfig();
+
+    // 参数化重试配置（来自全局配置）
+    const maxAttempts = Math.max(1, (await quickGetConfigValue<number>('ai.planner.retry.maxAttempts')) ?? 2);
+    const temperatureStepDown = Math.max(0, (await quickGetConfigValue<number>('ai.planner.retry.temperatureStepDown')) ?? 0.2);
+    const strictPrompt = (await quickGetConfigValue<string>('ai.planner.strictPrompt')) ?? '严格只输出一个 JSON 对象（UTF-8），不要使用反引号/Markdown 代码块/任何解释文字；若 JSON 校验失败请立即纠正；必要时将 selectorCandidates 设为空数组。';
+
+    const systemPrompt = [
+      '你是一名浏览器自动化智能体的资深规划专家。',
+      '请根据用户意图和可选上下文，产出最小化、逻辑有序、可执行的计划，格式为 JSON。',
+      '最终输出必须严格为 JSON 且仅包含一个对象：{"steps": Step[] }，不要任何解释或多余文本。',
+      '输出要求：',
+      '- 只能输出有效 JSON（UTF-8，无 BOM），不要使用反引号，不要使用 Markdown 代码块，不要输出额外文字或注释。',
+      '- JSON 必须可被 JSON.parse 直接解析。',
+      '- 如果不确定选择器，允许 selectorCandidates 为空数组，或给出低置信度的 text/css 候选。',
+      '- 若必须参数缺失（如 NAVIGATE 的 url），请合理从 intents 或 context 推断；实在无法推断时保持结构有效并尽量提供 WAIT 以保证可执行性。',
+      '规则：',
+      '- 不要包含 id、order、planId（由系统稍后分配）。',
+      '- 允许的动作: NAVIGATE, CLICK, TYPE, SELECT, SCROLL, WAIT, EXTRACT, SCREENSHOT, EVALUATE, HOVER, PRESS_KEY。',
+      '- NAVIGATE 必须提供 params.url。若缺失，请依据 intents.parameters.url 或 context.currentUrl 推断。',
+      '- 步骤需最小且相关。常见流程：NAVIGATE -> WAIT(NAVIGATION) -> TYPE -> CLICK/PRESS_KEY -> WAIT(ELEMENT) -> EXTRACT。',
+      '- 若 intents.target.selectors 已提供选择器，请优先使用。',
+      '领域偏好（用于更合理的步骤规划）：',
+      '- 电商：优先定位站内搜索框（input[type="search"], [placeholder*="搜"], [aria-label*="搜索"]），输入关键词后按 Enter 或点击"搜索/放大镜"按钮；如有"官方/自营/价格"筛选，先点击筛选再抽取商品列表（如 .product-item）。',
+      '- 搜索引擎：在当前/目标搜索页输入查询并提交；等待结果后，如用户要求打开首条结果则 CLICK 第一条标题链接；避免登录弹窗和不相关按钮。',
+      '- 表单填写：通过 label/placeholder/name 优先定位输入框；TYPE 输入值；SELECT 下拉选项；点击 type=submit 或文本为"提交/保存"的按钮提交；提交后等待 NAVIGATION 或 ELEMENT。',
+      '- 新闻：在新闻站点优先抽取列表中的标题、时间、来源与链接；若用户要求"打开第一条/最新"，CLICK 第一条新闻标题；需要摘要或正文时在详情页 EXTRACT 段落文本。',
+      '- 社交媒体：在站内搜索页输入关键词并提交；必要时 SCROLL 加载更多；CLICK "更多/展开"按钮再 EXTRACT 帖子卡片（作者、时间、内容、链接）；尽量避开登录弹窗。',
+      '- 视频网站：优先使用站内搜索（如 input[placeholder*="搜索"], .search-input）；必要时 SCROLL 加载视频列表；点击视频标题或封面进入播放页；EXTRACT 视频信息（标题、作者、播放量、时长、描述）；播放控制用 .play-btn, .pause-btn 等选择器。',
+      '- 地图导航：输入起点终点到搜索框（如 #origin, #destination, .route-input）；点击"搜索路线/导航"按钮；等待路线规划完成；EXTRACT 路线信息（距离、时长、路径）；必要时点击不同路线选项（如 .route-option）。',
+      '- 文档/学术：在搜索框输入关键词或论文标题；使用高级搜索过滤器（如年份、作者、期刊）；EXTRACT 搜索结果（标题、作者、摘要、DOI、下载链接）；点击标题进入详情页获取全文信息。',
+      '- 在线工具：定位主要功能输入区域（如 .input-area, #file-upload, .text-input）；输入内容或上传文件；点击"转换/处理/生成"按钮；等待处理完成；EXTRACT 或下载结果文件。',
+      '- 金融/股票：输入股票代码或公司名称到搜索框；EXTRACT 实时价格、涨跌幅、成交量等关键指标；必要时切换时间周期（日线、周线）或查看详细财务数据。',
+      '- 一般：NAVIGATE 之后务必 WAIT(NAVIGATION)；对需要渲染的页面在交互前 WAIT(ELEMENT)；避免冗余的连续 NAVIGATE；必要时使用 PRESS_KEY=Enter 提交搜索或表单。',
+      'Step 项（StepLike）结构：',
+      '{ "action":"NAVIGATE|CLICK|TYPE|SELECT|SCROLL|WAIT|EXTRACT|SCREENSHOT|EVALUATE|HOVER|PRESS_KEY",',
+      '  "selectorCandidates":[{"type":"css|xpath|text|aria-label|role|data-testid|id|class|tag|name","value":"...","score":80,"description":"...","fallback":false}],',
+      '  "params":{"url":"...","text":"...","value":"...","key":"...","options":{}},',
+      '  "waitFor":{"type":"NAVIGATION|ELEMENT|TIMEOUT|FUNCTION|NETWORK_IDLE","value":"...","timeout":5000},',
+      '  "retries":{"maxAttempts":2,"delay":1000,"backoff":true},',
+      '  "timeout":30000,',
+      '  "description":"...",',
+      '  "isOptional":false }',
+      '示例（仅供参考，不要在最终输出中包含本行或任何解释文本）：',
+      '{"steps":[',
+      ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开主页","isOptional":false},',
+      ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[type=\\"search\\"]","score":85,"description":"站内搜索框"}],"params":{"text":"iPhone 15"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入关键词","isOptional":false},',
+      ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
+      ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".product-item","score":70,"description":"商品卡片"}],"params":{"options":{"fields":["title","price","link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取商品信息","isOptional":false}',
+      ']}'
+    ].join('\n');
+
+    // 基于意图/上下文动态拼接扩展的小样例集
+    const toLower = (s?: string) => (s || '').toLowerCase();
+    const strIncludesAny = (s: string, kws: string[]) => kws.some(k => s.includes(k));
+    const inferDomains = () => {
+      const domains = new Set<string>();
+      const url = toLower(context?.currentUrl);
+      const urlHost = url.replace(/^https?:\/\//, '');
+      for (const it of intents) {
+        const d = toLower(it.context?.domain);
+        const p = toLower(it.context?.pageType);
+        const g = toLower(it.context?.userGoal);
+        const text = `${d} ${p} ${g} ${urlHost}`;
+        
+        // 电商领域
+        if (strIncludesAny(text, ['jd.com','tmall','taobao','pinduoduo','pdd','amazon','ebay','购物','电商','shop'])) domains.add('ecommerce');
+        
+        // 搜索引擎
+        if (strIncludesAny(text, ['google','bing','baidu','duckduckgo','搜索','search'])) domains.add('search');
+        
+        // 表单
+        if (strIncludesAny(text, ['表单','form','submit','registration','login','注册','登录'])) domains.add('forms');
+        
+        // 新闻
+        if (strIncludesAny(text, ['news','新闻','xinhuanet','people.com.cn','bbc','cnn','nytimes','guardian','reuters','sohu','163.com','ifeng','sina','qq.com','36kr','huxiu','cnbeta'])) domains.add('news');
+        
+        // 社交媒体
+        if (strIncludesAny(text, ['weibo','twitter','x.com','facebook','instagram','reddit','douyin','tiktok','bilibili','zhihu','xiaohongshu','小红书','社交'])) domains.add('social');
+        
+        // 视频网站
+        if (strIncludesAny(text, ['youtube','bilibili','youku','iqiyi','tencent','qq.com/v','优酷','爱奇艺','腾讯视频','视频','video','watch','播放'])) domains.add('video');
+        
+        // 地图导航
+        if (strIncludesAny(text, ['maps','baidu.com/map','amap','gaode','谷歌地图','百度地图','高德地图','导航','地图','route','navigation'])) domains.add('maps');
+        
+        // 文档/学术
+        if (strIncludesAny(text, ['scholar','arxiv','researchgate','pubmed','cnki','万方','维普','学术','论文','文档','document','pdf','paper'])) domains.add('documents');
+        
+        // 在线工具
+        if (strIncludesAny(text, ['tool','converter','generator','在线工具','转换器','生成器','processor','editor'])) domains.add('tools');
+        
+        // 金融/股票
+        if (strIncludesAny(text, ['finance','stock','yahoo.finance','sina.finance','eastmoney','金融','股票','财经','基金','investment'])) domains.add('finance');
       }
+      
+      // 若无明显领域，根据动作简单推断
+      if (domains.size === 0) {
+        const hasType = intents.some(i => i.action?.toString().includes('type'));
+        const hasExtract = intents.some(i => i.action?.toString().includes('extract'));
+        if (hasType) domains.add('search');
+        if (hasExtract) domains.add('news');
+      }
+      return Array.from(domains);
+    };
+
+    const domains = inferDomains();
+
+    const domainExamples: string[] = [];
+    
+    // 新闻领域示例
+    if (domains.includes('news')) {
+      domainExamples.push(
+        '// 新闻网站示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://news.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开新闻站点","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".news-item","score":70,"description":"新闻列表项"}],"params":{"options":{"fields":["title","time","source","link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取新闻信息","isOptional":false}',
+        ']}'
+      );
+    }
+    
+    // 社交媒体示例
+    if (domains.includes('social')) {
+      domainExamples.push(
+        '// 社交媒体示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://social.example.com/search"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"进入社交搜索页","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[type=\\"search\\"]","score":80,"description":"站内搜索框"}],"params":{"text":"热点话题"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入关键词","isOptional":false},',
+        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
+        ' {"action":"SCROLL","selectorCandidates":[],"params":{"value":"page_down"},"waitFor":{"type":"ELEMENT","timeout":2000},"retries":{"maxAttempts":1,"delay":500,"backoff":false},"timeout":5000,"description":"滚动加载更多","isOptional":true},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".post-card","score":70,"description":"帖子卡片"}],"params":{"options":{"fields":["author","time","content","link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取帖子数据","isOptional":false}',
+        ']}'
+      );
+    }
+    
+    // 视频网站示例
+    if (domains.includes('video')) {
+      domainExamples.push(
+        '// 视频网站示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://video.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开视频网站","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[placeholder*=\\"搜索\\"]","score":85,"description":"视频搜索框"}],"params":{"text":"教程视频"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入搜索关键词","isOptional":false},',
+        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".video-item:first-child .video-title","score":75,"description":"第一个视频标题"}],"params":{},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"点击视频进入播放页","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".video-info","score":70,"description":"视频信息区域"}],"params":{"options":{"fields":["title","author","views","duration","description"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取视频信息","isOptional":false}',
+        ']}'
+      );
+    }
+    
+    // 地图导航示例
+    if (domains.includes('maps')) {
+      domainExamples.push(
+        '// 地图导航示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://maps.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开地图网站","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"#origin","score":90,"description":"起点输入框"}],"params":{"text":"北京站"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入起点","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"#destination","score":90,"description":"终点输入框"}],"params":{"text":"天安门广场"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入终点","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".route-search-btn","score":85,"description":"搜索路线按钮"}],"params":{},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"搜索路线","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".route-result","score":75,"description":"路线结果"}],"params":{"options":{"fields":["distance","duration","route_steps"]}},"waitFor":{"type":"ELEMENT","timeout":8000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":20000,"description":"抽取路线信息","isOptional":false}',
+        ']}'
+      );
+    }
+    
+    // 文档/学术示例
+    if (domains.includes('documents')) {
+      domainExamples.push(
+        '// 学术文档示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://scholar.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开学术搜索","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[name=\\"q\\"]","score":85,"description":"学术搜索框"}],"params":{"text":"machine learning"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入搜索关键词","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":"button[type=\\"submit\\"]","score":80,"description":"搜索按钮"}],"params":{},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".paper-item","score":70,"description":"论文条目"}],"params":{"options":{"fields":["title","authors","abstract","doi","pdf_link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取论文信息","isOptional":false}',
+        ']}'
+      );
+    }
+    
+    // 在线工具示例
+    if (domains.includes('tools')) {
+      domainExamples.push(
+        '// 在线工具示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://tool.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开在线工具","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":".text-input","score":80,"description":"文本输入区域"}],"params":{"text":"待处理的文本内容"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入待处理内容","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".process-btn","score":85,"description":"处理按钮"}],"params":{},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"启动处理","isOptional":false},',
+        ' {"action":"WAIT","selectorCandidates":[],"params":{},"waitFor":{"type":"ELEMENT","value":".result-ready","timeout":10000},"retries":{"maxAttempts":1,"delay":2000,"backoff":false},"timeout":15000,"description":"等待处理完成","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".result-output","score":75,"description":"处理结果"}],"params":{"options":{"fields":["processed_text","download_link"]}},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":10000,"description":"抽取处理结果","isOptional":false}',
+        ']}'
+      );
+    }
+    
+    // 金融/股票示例
+    if (domains.includes('finance')) {
+      domainExamples.push(
+        '// 金融股票示例',
+        '{"steps":[',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://finance.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开金融网站","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[placeholder*=\\"股票代码\\"]","score":85,"description":"股票搜索框"}],"params":{"text":"AAPL"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入股票代码","isOptional":false},',
+        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"搜索股票","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".stock-info","score":75,"description":"股票信息面板"}],"params":{"options":{"fields":["current_price","change_percent","volume","market_cap"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取股票数据","isOptional":false}',
+        ']}'
+      );
     }
 
-    // 优化步骤序列
-    const optimizedSteps = this.optimizeSteps(allSteps, context);
+    // 将动态示例拼接到提示词末尾（若存在）
+    let finalSystemPrompt = systemPrompt;
+    if (domainExamples.length > 0) {
+      finalSystemPrompt += '\n更多领域示例（仅供参考，不要在最终输出中包含本段或任何解释）：\n' + domainExamples.join('\n');
+    }
 
-    // 评估风险
-    const riskLevel = strategy.assessRisk(optimizedSteps, context);
+    const payload = { intents, context };
 
-    // 估算执行时间
-    const estimatedDuration = strategy.estimateDuration(optimizedSteps);
+    // 参数化重试机制
+    let currentAttempt = 1;
+    let currentTemperature = cfg.temperature ?? 0.2;
+    let data: any;
+    let rawSteps: any[] = [];
 
-    // 生成元数据
-    const metadata = this.generateMetadata(intents, optimizedSteps, context);
+    while (currentAttempt <= maxAttempts) {
+      try {
+        this.logger.debug('AI Planner attempt', { 
+          attempt: currentAttempt, 
+          maxAttempts, 
+          temperature: currentTemperature 
+        });
+
+        // 构建消息，重试时追加严格提示
+        const messages: any[] = [
+          { role: 'system', content: finalSystemPrompt },
+          { role: 'user', content: JSON.stringify(payload) }
+        ];
+
+        if (currentAttempt > 1) {
+          messages.push({
+            role: 'system',
+            content: `重试请求：${strictPrompt}`
+          });
+        }
+
+        const resp = await client.chat.completions.create({
+          model: cfg.model,
+          messages,
+          temperature: currentTemperature,
+          max_tokens: cfg.maxTokens ?? 2048,
+          top_p: cfg.topP ?? 1
+        });
+
+        const text = resp.choices?.[0]?.message?.content || '';
+
+        // 尝试解析 JSON
+        try {
+          data = JSON.parse(extractJsonBlock(text));
+          rawSteps = Array.isArray(data?.steps) ? data.steps : (Array.isArray(data) ? data : []);
+          
+          if (!rawSteps.length) {
+            throw new Error('Empty steps array');
+          }
+
+          this.logger.debug('AI Planner JSON parsed successfully', { 
+            stepsCount: rawSteps.length, 
+            attempt: currentAttempt 
+          });
+          break; // 成功解析，退出重试循环
+
+        } catch (parseError) {
+          this.logger.warn('AI Planner JSON parse failed', { 
+            attempt: currentAttempt, 
+            preview: text.slice(0, 200),
+            error: parseError instanceof Error ? parseError.message : 'Unknown parse error'
+          });
+          
+          if (currentAttempt >= maxAttempts) {
+            throw new Error(`AI Planner failed after ${maxAttempts} attempts: invalid JSON output`);
+          }
+        }
+
+      } catch (error) {
+        this.logger.error('AI Planner request failed', { 
+          attempt: currentAttempt, 
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+        
+        if (currentAttempt >= maxAttempts) {
+          throw new Error(`AI Planner failed after ${maxAttempts} attempts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      // 准备下一次重试：降低温度
+      currentAttempt++;
+      currentTemperature = Math.max(0, currentTemperature - temperatureStepDown);
+    }
+
+    // 本地 schema 校验与自动修正：归一化为内部 Step 结构
+    // 辅助：规范化 selectorCandidates
+    const normalizeSelectorCandidates = (cands: any[]): SelectorCandidate[] => {
+      if (!Array.isArray(cands)) return [];
+      const allowed = new Set<SelectorType>([
+        SelectorType.CSS,
+        SelectorType.XPATH,
+        SelectorType.TEXT,
+        SelectorType.ARIA_LABEL,
+        SelectorType.ROLE,
+        SelectorType.DATA_TESTID,
+        SelectorType.ID,
+        SelectorType.CLASS,
+        SelectorType.TAG,
+        SelectorType.NAME
+      ]);
+      return cands.map((c: any) => {
+        const rawType = (c?.type ?? 'css').toString().toLowerCase();
+        // 将常见变体归一：aria_label -> aria-label 等
+        const mapped = rawType.replace('_', '-');
+        const type = (allowed.has(mapped as SelectorType) ? mapped : 'css') as SelectorType;
+        const scoreNum = typeof c?.score === 'number' ? c.score : (typeof c?.confidence === 'number' ? Math.round(c.confidence * 100) : 50);
+        const score = Math.max(0, Math.min(100, scoreNum));
+        return {
+          type,
+          value: c?.value?.toString?.() || '',
+          score,
+          description: c?.description?.toString?.() || `${type}: ${c?.value || ''}`,
+          fallback: Boolean(c?.fallback)
+        } as SelectorCandidate;
+      }).filter(c => typeof c.value === 'string');
+    };
+
+    const ensureRetries = (r: any): RetryConfig => {
+      const ma = Math.max(0, Number.isFinite(r?.maxAttempts) ? Number(r.maxAttempts) : 2);
+      const delay = Math.max(0, Number.isFinite(r?.delay) ? Number(r.delay) : 1000);
+      const backoff = Boolean(r?.backoff ?? true);
+      return { maxAttempts: ma, delay, backoff };
+    };
+
+    const ensureParams = (p: any, action: ActionType): StepParams => {
+      const obj = typeof p === 'object' && p !== null ? p : {};
+      const params: StepParams = {
+        text: typeof obj.text === 'string' ? obj.text : undefined,
+        url: typeof obj.url === 'string' ? obj.url : undefined,
+        value: typeof obj.value === 'string' ? obj.value : undefined,
+        key: typeof obj.key === 'string' ? obj.key : undefined,
+        coordinates: (obj.coordinates && typeof obj.coordinates.x === 'number' && typeof obj.coordinates.y === 'number')
+          ? { x: obj.coordinates.x, y: obj.coordinates.y } : undefined,
+        options: typeof obj.options === 'object' && obj.options !== null ? obj.options : undefined
+      };
+      // 针对 PRESS_KEY 默认 key
+      if (action === ActionType.PRESS_KEY && !params.key) params.key = 'Enter';
+      return params;
+    };
+
+    const ensureTimeout = (t: any, action: ActionType): number => {
+      const num = Number.isFinite(t) ? Number(t) : undefined;
+      if (typeof num === 'number' && num > 0) return num;
+      if (action === ActionType.NAVIGATE) return 30000;
+      if (action === ActionType.WAIT) return 5000;
+      return 8000;
+    };
+
+    const validateAndFixStep = (sl: any): Step => {
+      const action = normalizeAction(sl?.action);
+      const selectorCandidates = normalizeSelectorCandidates(sl?.selectorCandidates);
+      const params = ensureParams(sl?.params, action);
+      const waitFor = normalizeWait(sl?.waitFor, action);
+      const retries = ensureRetries(sl?.retries);
+      const timeout = ensureTimeout(sl?.timeout, action);
+      const description = typeof sl?.description === 'string' && sl.description.trim().length > 0
+        ? sl.description
+        : `Execute ${action}`;
+      const isOptional = Boolean(sl?.isOptional ?? false);
+
+      const fixed: Step = {
+        id: '',
+        planId: '',
+        order: 0,
+        action,
+        selectorCandidates,
+        params,
+        waitFor,
+        retries,
+        timeout,
+        description,
+        isOptional
+      };
+      return fixed;
+    };
+
+    // 补充上下文/意图中的 URL 以防缺失
+    const intentUrl = intents.find(i => i.parameters?.url)?.parameters?.url
+      || intents.find(i => i.target?.type === 'url' && i.target?.description)?.target?.description
+      || context?.currentUrl
+      || '';
+
+    const steps: Step[] = rawSteps.map((sl: any): Step => {
+      const step = validateAndFixStep(sl);
+      if (step.action === ActionType.NAVIGATE && !step.params.url) {
+        step.params.url = intentUrl;
+      }
+      return step;
+    }).filter(s => s.action !== ActionType.NAVIGATE || !!s.params.url);
+
+    // 分配顺序与 ID
+    let stepOrder = 0;
+    for (const step of steps) {
+      step.order = stepOrder++;
+      step.id = `${taskId}_step_${step.order}`;
+    }
+
+    // 估算风险与时长（简单启发式）
+    const navCount = steps.filter(s => s.action === ActionType.NAVIGATE).length;
+    const total = steps.length;
+    const riskLevel = total <= 6 && navCount <= 1 ? RiskLevel.LOW : (total <= 12 ? RiskLevel.MEDIUM : RiskLevel.HIGH);
+
+    const estimatedDuration = steps.reduce((acc, s) => {
+      if (s.action === ActionType.NAVIGATE) return acc + (s.timeout || 30000);
+      if (s.action === ActionType.WAIT) return acc + (s.waitFor?.timeout || 3000);
+      return acc + Math.min(s.timeout || 8000, 15000);
+    }, 0);
+
+    // 生成元数据（简化）
+    const metadata: PlanMetadata = {
+      targetUrl: intentUrl || undefined,
+      description: this.generateDescription(intents, steps),
+      tags: ['ai-planner', ...domains.map(d => `domain-${d}`)],
+      warnings: [],
+      requirements: []
+    };
 
     const plan: Plan = {
       id: `plan_${taskId}_${Date.now()}`,
       taskId,
-      steps: optimizedSteps,
+      steps,
       riskLevel,
       meta: metadata,
       createdAt: new Date(),
       estimatedDuration
     };
+
+    // 回填 planId 到步骤
+    for (const step of plan.steps) {
+      step.planId = plan.id;
+    }
 
     // 验证计划
     const validation = this.validatePlan(plan);
@@ -126,16 +548,17 @@ export class Planner {
       this.logger.error('Plan validation failed', { errors: validation.errors });
       throw new Error(`Plan validation failed: ${validation.errors.join(', ')}`);
     }
-
     if (validation.warnings.length > 0) {
       this.logger.warn('Plan validation warnings', { warnings: validation.warnings });
     }
 
-    this.logger.info('Plan generated successfully', {
+    this.logger.info('Plan generated successfully (AI-only)', {
       planId: plan.id,
       stepsCount: plan.steps.length,
       riskLevel: plan.riskLevel,
-      estimatedDuration: plan.estimatedDuration
+      estimatedDuration: plan.estimatedDuration,
+      domains: domains,
+      attempts: currentAttempt - 1
     });
 
     return plan;

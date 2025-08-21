@@ -33,6 +33,14 @@ export interface AppConfig {
       password?: string;
     };
     args: string[];
+    // 新增：反爬/环境伪装配置
+    stealth?: boolean;
+    userDataDir?: string;
+    locale?: string;
+    languages?: string[];
+    timezone?: string;
+    executablePath?: string;
+    extraHeaders?: Record<string, string>;
   };
 
   // 选择器配置
@@ -92,6 +100,14 @@ export interface AppConfig {
     topP: number;
     systemPrompt?: string;
     timeout: number;
+    // 新增：Planner 参数化重试与严格提示
+    planner?: {
+      retry?: {
+        maxAttempts?: number; // LLM 规划调用的最大总尝试次数（含首次）
+        temperatureStepDown?: number; // 每次重试温度降低幅度
+      };
+      strictPrompt?: string; // 重试时追加的更严格提示内容
+    };
   };
 
   // 插件配置
@@ -150,6 +166,11 @@ export class ConfigManager {
           width: 1920,
           height: 1080
         },
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        stealth: true,
+        locale: 'zh-CN',
+        languages: ['zh-CN','zh'],
+        timezone: 'Asia/Shanghai',
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -212,7 +233,15 @@ export class ConfigManager {
         maxTokens: parseInt(process.env.AI_MAX_TOKENS || '2048', 10),
         topP: parseFloat(process.env.AI_TOP_P || '1'),
         systemPrompt: process.env.AI_SYSTEM_PROMPT,
-        timeout: parseInt(process.env.AI_TIMEOUT || '60000', 10)
+        timeout: parseInt(process.env.AI_TIMEOUT || '60000', 10),
+        // 新增默认 Planner 配置
+        planner: {
+          retry: {
+            maxAttempts: 2,
+            temperatureStepDown: 0.2
+          },
+          strictPrompt: '严格只输出一个 JSON 对象（UTF-8），不要使用反引号、不要使用 Markdown 代码块、不要输出任何解释或额外文本；如果无法完全确定选择器，保持 selectorCandidates 为 [] 或给出低置信度候选；若 JSON 校验失败，请立即纠正并重新生成可被 JSON.parse 解析的结果。'
+        }
       },
       plugins: {
         enabled: [],
@@ -403,7 +432,11 @@ export class ConfigManager {
       { path: 'ai.temperature', type: 'number', required: true, min: 0, max: 2 },
       { path: 'ai.maxTokens', type: 'number', required: true, min: 1, max: 200000 },
       { path: 'ai.topP', type: 'number', required: true, min: 0, max: 1 },
-      { path: 'ai.timeout', type: 'number', required: true, min: 1000, max: 600000 }
+      { path: 'ai.timeout', type: 'number', required: true, min: 1000, max: 600000 },
+      // 新增：Planner 配置验证
+      { path: 'ai.planner.retry.maxAttempts', type: 'number', required: false, min: 1, max: 10 },
+      { path: 'ai.planner.retry.temperatureStepDown', type: 'number', required: false, min: 0, max: 1 },
+      { path: 'ai.planner.strictPrompt', type: 'string', required: false }
     ];
 
     for (const rule of rules) {

@@ -54,6 +54,17 @@ export interface ExecutorConfig {
   maxConcurrentPages: number;
   navigationTimeout: number;
   elementTimeout: number;
+  // 新增：可选的浏览器可执行文件路径（用于使用系统已安装的 Chrome/Chromium）
+  executablePath?: string;
+  // 新增：反爬增强与环境伪装配置
+  stealth?: boolean;
+  devtools?: boolean;
+  slowMo?: number;
+  userDataDir?: string;
+  locale?: string; // 如 zh-CN
+  languages?: string[]; // 如 ['zh-CN','zh']
+  timezone?: string; // 如 Asia/Shanghai
+  extraHeaders?: Record<string, string>;
 }
 
 /**
@@ -92,6 +103,15 @@ export class Executor {
       maxConcurrentPages: 5,
       navigationTimeout: 30000,
       elementTimeout: 10000,
+      // 反爬增强默认开启
+      stealth: true,
+      devtools: false,
+      slowMo: 0,
+      userDataDir: undefined,
+      locale: 'zh-CN',
+      languages: ['zh-CN', 'zh'],
+      timezone: 'Asia/Shanghai',
+      extraHeaders: undefined,
       ...config
     };
   }
@@ -101,9 +121,30 @@ export class Executor {
    */
   async initialize(): Promise<void> {
     try {
-      const puppeteer = await import('puppeteer');
-      
-      this.browser = await puppeteer.launch({
+      let puppeteerLib: any;
+      let useStealth = !!this.config.stealth;
+
+      try {
+        const puppeteerExtra = (await import('puppeteer-extra')).default as any;
+        if (useStealth) {
+          const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default as any;
+          puppeteerExtra.use(StealthPlugin());
+        }
+        puppeteerLib = puppeteerExtra;
+        this.logger.info(`Using puppeteer-extra${useStealth ? ' with stealth' : ''}`);
+      } catch (e) {
+        // 回退到原生 puppeteer
+        const puppeteer = await import('puppeteer');
+        puppeteerLib = puppeteer;
+        useStealth = false;
+        this.logger.warn('puppeteer-extra not available, falling back to puppeteer');
+      }
+
+      // 允许通过配置或环境变量指定可执行文件路径
+      const envExecutable = process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+      const executablePath = this.config.executablePath || envExecutable;
+
+      const launchOptions: any = {
         headless: this.config.headless,
         args: [
           '--no-sandbox',
@@ -112,10 +153,21 @@ export class Executor {
           '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
-          '--disable-gpu'
-        ],
-        defaultViewport: this.config.viewport
-      });
+          '--disable-gpu',
+          this.config.locale ? `--lang=${this.config.locale}` : undefined
+        ].filter(Boolean),
+        defaultViewport: this.config.viewport,
+        devtools: this.config.devtools,
+        slowMo: this.config.slowMo,
+        userDataDir: this.config.userDataDir
+      };
+
+      if (executablePath) {
+        launchOptions.executablePath = executablePath;
+        this.logger.info('Using custom Chrome executable', { executablePath });
+      }
+      
+      this.browser = (await puppeteerLib.launch(launchOptions)) as unknown as Browser;
 
       this.logger.info('Browser initialized successfully');
       
@@ -124,7 +176,9 @@ export class Executor {
         config: this.config
       });
     } catch (error) {
-      this.logger.error('Failed to initialize browser:', error);
+      // 更详细的错误日志，便于排查
+      const err = error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : error;
+      this.logger.error('Failed to initialize browser:', err as any);
       throw this.errorHandler.createError(
         ErrorCode.BROWSER_LAUNCH_ERROR,
         'Failed to initialize browser',
@@ -366,9 +420,17 @@ export class Executor {
     this.logger.debug(`Navigating to: ${url}`);
     
     const response = await context.page.goto(url, {
-      waitUntil: 'networkidle2',
+      waitUntil: 'domcontentloaded',
       timeout: this.config.navigationTimeout
     });
+
+    // 额外等待稳定：网络空闲或首屏稳定
+    try {
+      await context.page.waitForNetworkIdle({ idleTime: 800, timeout: Math.min(10000, this.config.navigationTimeout) });
+    } catch {}
+    try {
+      await context.page.waitForFunction(() => document.readyState === 'complete', { timeout: Math.min(10000, this.config.navigationTimeout) });
+    } catch {}
     
     // 更新上下文URL
     context.currentUrl = context.page.url();
@@ -693,6 +755,15 @@ export class Executor {
     }
     
     const page = await this.browser.newPage();
+
+    // Headers 优化：尽量模拟真实请求头
+    if (this.config.extraHeaders) {
+      await page.setExtraHTTPHeaders(this.config.extraHeaders);
+    }
+    const acceptLang = (this.config.languages && this.config.languages.length > 0)
+      ? this.config.languages.join(',')
+      : (this.config.locale || 'en-US');
+    await page.setExtraHTTPHeaders({ 'Accept-Language': acceptLang, ...(this.config.extraHeaders || {}) });
     
     // 设置用户代理
     await page.setUserAgent(this.config.userAgent);
@@ -703,6 +774,27 @@ export class Executor {
     // 设置超时
     page.setDefaultTimeout(this.config.timeout);
     page.setDefaultNavigationTimeout(this.config.navigationTimeout);
+
+    // 设置时区与语言
+    try {
+      if (this.config.timezone) {
+        await page.emulateTimezone(this.config.timezone);
+      }
+    } catch (e) {
+      this.logger.warn('Failed to emulate timezone', { error: e });
+    }
+
+    // 进一步去除自动化痕迹（在未启用 stealth 时的兜底）
+    if (this.config.stealth === false) {
+      await page.evaluateOnNewDocument(() => {
+        // @ts-ignore
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        // @ts-ignore
+        const copy = navigator.languages;
+        // @ts-ignore
+        Object.defineProperty(navigator, 'languages', { get: () => copy && copy.length ? copy : ['zh-CN','zh'] });
+      });
+    }
     
     this.pages.set(planId, page);
     
