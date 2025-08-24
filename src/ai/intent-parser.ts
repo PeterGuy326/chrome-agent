@@ -75,8 +75,16 @@ export class AIIntentParser {
        if (!content) {
          throw new Error('Empty response from AI');
        }
-  
-       const aiResult = JSON.parse(content);
+
+       // 处理可能包含markdown代码块的JSON响应
+       let cleanContent = content.trim();
+       if (cleanContent.startsWith('```json')) {
+         cleanContent = cleanContent.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+       } else if (cleanContent.startsWith('```')) {
+         cleanContent = cleanContent.replace(/^```\s*/, '').replace(/\s*```$/, '');
+       }
+
+       const aiResult = JSON.parse(cleanContent);
        const intents = this.parseAIResponse(aiResult);
        
        this.logger.info(`AI parsed ${intents.length} intent candidates`, {

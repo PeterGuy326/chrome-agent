@@ -178,6 +178,28 @@ program
       // 保持浏览器与页面开启，便于用户和AI共同操作
     } catch (error) {
       logger.error('任务执行失败', { error });
+      
+      // 使用AI分析错误并生成用户友好的解释
+      try {
+        const { getDefaultAIErrorAnalyzer } = await import('../ai/error-analyzer');
+        const errorAnalyzer = getDefaultAIErrorAnalyzer();
+        const analysis = await errorAnalyzer.analyzeError(error as Error, {
+          task,
+          url: options.url
+        });
+        
+        console.log(`\n❌ ${analysis.summary}`);
+        if (analysis.possibleCauses.length > 0) {
+          console.log(`\n💡 ${analysis.possibleCauses[0]}`);
+        }
+        if (analysis.suggestions.length > 0) {
+          console.log(`🔧 ${analysis.suggestions[0]}`);
+        }
+        console.log('');
+      } catch (analysisError) {
+        console.log('\n❌ 任务执行失败\n');
+      }
+      
       process.exit(1);
     }
   });
