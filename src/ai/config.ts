@@ -3,9 +3,9 @@
  * 处理 OpenAI 兼容的 API 客户端连接
  */
 
-import { OpenAI } from 'openai';
 import { getDefaultLogger } from '../core/logger';
 import { quickGetConfigValue } from '../storage';
+import { createOpenAICompatibleClient } from './client-factory';
 
 const logger = getDefaultLogger();
 
@@ -16,7 +16,8 @@ export enum AIProvider {
   OPENAI = 'openai',
   DEEPSEEK = 'deepseek',
   CUSTOM = 'custom',
-  MODELSCOPE = 'modelscope'
+  MODELSCOPE = 'modelscope',
+  GOOGLE = 'google'
 }
 
 /**
@@ -42,7 +43,7 @@ export interface AIConfig {
  */
 export class AIClientManager {
   private static instance: AIClientManager | null = null;
-  private client: OpenAI | null = null;
+  private client: any | null = null; // loosen type to support custom providers
   private config: AIConfig | null = null;
 
   private constructor() {}
@@ -71,12 +72,15 @@ export class AIClientManager {
       }
 
       const provider = await quickGetConfigValue<string>('ai.provider') ?? AIProvider.OPENAI;
-      const model = await quickGetConfigValue<string>('ai.model') ?? 'gpt-3.5-turbo';
+      const model = await quickGetConfigValue<string>('ai.model') ?? '';
       const baseUrl = await quickGetConfigValue<string>('ai.baseUrl');
       const apiKey = await quickGetConfigValue<string>('ai.apiKey');
       
       if (!apiKey) {
         throw new Error('AI API key not configured');
+      }
+      if (!model) {
+        throw new Error('AI model not configured. Please set ai.model or use --model.');
       }
 
       this.config = {
@@ -97,18 +101,13 @@ export class AIClientManager {
       if (this.config.provider === AIProvider.MODELSCOPE && !this.config.baseUrl) {
         throw new Error('AI provider "modelscope" requires baseUrl. Please set --baseUrl or MODELSCOPE_BASE_URL.');
       }
-      // 创建 OpenAI 客户端
-      const clientConfig: any = {
+
+      // 根据提供商创建客户端（统一工厂）
+      this.client = createOpenAICompatibleClient(String(this.config.provider), {
         apiKey: this.config.apiKey,
+        baseUrl: this.config.baseUrl,
         timeout: this.config.timeout
-      };
-
-      // 为 DeepSeek 或自定义提供商设置 baseURL
-      if (this.config.baseUrl) {
-        clientConfig.baseURL = this.config.baseUrl;
-      }
-
-      this.client = new OpenAI(clientConfig);
+      });
       
       logger.info('AI client initialized', {
         provider: this.config.provider,
@@ -156,7 +155,7 @@ export class AIClientManager {
   /**
    * 获取 AI 客户端
    */
-  getClient(): OpenAI {
+  getClient(): any {
     if (!this.client) {
       throw new Error('AI client not initialized. Call initialize() first.');
     }
@@ -225,7 +224,7 @@ export function isAIEnabled(): boolean {
 /**
  * 获取 AI 客户端
  */
-export function getAIClient(): OpenAI {
+export function getAIClient(): any {
   const manager = getAIClientManager();
   return manager.getClient();
 }

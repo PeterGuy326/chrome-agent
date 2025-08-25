@@ -3,6 +3,7 @@
  * 提供兼容Open WebUI的HTTP接口
  */
 
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';

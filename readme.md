@@ -170,3 +170,61 @@ flowchart LR
 2. **交互形态**：✅ **MVP 优先支持 CLI（命令行），后续扩展轻量 Web UI**（CLI 开发快速，满足初期需求，UI 后续提升易用性）。  
 3. **存储方案**：✅ **采用本地文件系统存储**（轻量易部署，满足当前需求，敏感信息如账号密码采用加密存储）。  
 4. **日志策略**：✅ **截图与日志按需开启**（节省存储空间，用户可根据调试需要灵活配置）。  
+
+
+## 12. AI 配置与使用
+
+Chrome Agent 支持统一的“OpenAI 兼容”调用接口：不论选择哪家 AI 提供商，内部都通过统一的 client.chat.completions.create(...) 完成调用。只需在 CLI 或配置中设置 provider、model、apiKey、baseUrl（按需），即可无缝切换。
+
+- 基础概念
+  - provider：AI 提供商，支持 openai | deepseek | modelscope | custom | google
+  - model：所用模型名称（各 provider 的命名不同）
+  - apiKey：对应 provider 的 API 密钥
+  - baseUrl：可选，自定义 API 入口（部分 provider 必填，见下）
+
+- 快速开始（CLI）
+  - OpenAI
+    - chrome-agent run "帮我打开百度并搜索北京天气" --ai \
+      --provider openai \
+      --model gpt-4o-mini \
+      --apiKey $OPENAI_API_KEY
+  - DeepSeek（若未指定 baseUrl，将默认使用 https://api.deepseek.com）
+    - chrome-agent run "抓取页面中的标题列表" --ai \
+      --provider deepseek \
+      --model deepseek-chat \
+      --apiKey $DEEPSEEK_API_KEY
+  - ModelScope（必须提供 baseUrl）
+    - chrome-agent run "列出商品价格并导出 CSV" --ai \
+      --provider modelscope \
+      --model qwen2-7b-instruct \
+      --baseUrl $MODELSCOPE_BASE_URL \
+      --apiKey $MODELSCOPE_API_KEY
+  - Google Gemini（使用 OpenAI 兼容适配层，无需手动指定 baseUrl，若缺省将默认 https://generativelanguage.googleapis.com/v1beta）
+    - chrome-agent run "生成一个简单的页面交互计划" --ai \
+      --provider google \
+      --model gemini-1.5-pro \
+      --apiKey $GOOGLE_API_KEY
+  - 自定义 OpenAI 兼容服务（必须提供 baseUrl）
+    - chrome-agent run "访问页面并提取表格" --ai \
+      --provider custom \
+      --model my-model \
+      --baseUrl https://my-openai-compatible.endpoint/v1 \
+      --apiKey $AI_API_KEY
+
+- 环境变量（CLI 未显式传入时的兜底）
+  - 通用：AI_PROVIDER, AI_MODEL, AI_API_KEY, AI_BASE_URL
+  - OpenAI：OPENAI_MODEL, OPENAI_API_KEY, OPENAI_BASE_URL
+  - DeepSeek：DEEPSEEK_MODEL, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
+  - ModelScope：MODELSCOPE_MODEL, MODELSCOPE_API_KEY, MODELSCOPE_BASE_URL
+  - Google：GOOGLE_MODEL 或 GEMINI_MODEL, GOOGLE_API_KEY 或 GEMINI_API_KEY, GOOGLE_BASE_URL
+
+- 注意事项
+  - provider=modelscope 或 custom 时，必须提供 baseUrl
+  - provider=google 时，baseUrl 未配置将自动回退为 https://generativelanguage.googleapis.com/v1beta；model 需显式指定
+  - 我们会在启动时进行一次连通性测试，若失败将提供错误提示
+
+- 统一接口
+  - 内部通过工厂方法创建客户端：根据 provider 选择 OpenAI SDK 或 Gemini 适配器
+  - 您无需关心底层协议差异，始终以 chat.completions.create(...) 形式使用
+
+如需扩展更多自定义提供商，可在 src/ai/client-factory.ts 中添加分支逻辑（设置默认 baseUrl 或校验必填项），保持返回对象兼容 OpenAI SDK 接口。

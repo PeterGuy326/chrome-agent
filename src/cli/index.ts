@@ -5,6 +5,7 @@
  * 提供命令行接口来使用Chrome Agent的各种功能
  */
 
+import 'dotenv/config';
 import { Command } from 'commander';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -40,7 +41,7 @@ program
   .option('-w, --wait <ms>', '等待时间（毫秒）', '3000')
   .option('-v, --verbose', '详细输出', false)
   .option('--ai', '启用基于AI的意图解析', false)
-  .option('--provider <provider>', 'AI提供商 (openai|deepseek|custom|modelscope)')
+  .option('--provider <provider>', 'AI提供商 (openai|deepseek|custom|modelscope|google)')
   .option('--model <model>', 'AI 模型')
   .option('--baseUrl <url>', 'AI Base URL')
   .option('--apiKey <key>', 'AI API Key')
@@ -89,37 +90,39 @@ program
         const prov = options.provider || process.env.AI_PROVIDER;
         const envApiKey = prov === 'deepseek' ? process.env.DEEPSEEK_API_KEY
           : prov === 'modelscope' ? process.env.MODELSCOPE_API_KEY || process.env.AI_API_KEY
+          : prov === 'google' ? (process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.AI_API_KEY)
           : process.env.OPENAI_API_KEY || process.env.AI_API_KEY;
         if (envApiKey) {
           await quickSetConfigValue('ai.apiKey', envApiKey);
         }
         const envBaseUrl = prov === 'deepseek' ? (process.env.DEEPSEEK_BASE_URL || process.env.AI_BASE_URL)
           : prov === 'modelscope' ? process.env.MODELSCOPE_BASE_URL
+          : prov === 'google' ? (process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta')
           : (process.env.OPENAI_BASE_URL || process.env.AI_BASE_URL);
         if (envBaseUrl) {
           await quickSetConfigValue('ai.baseUrl', envBaseUrl);
         }
         const envModel = prov === 'deepseek' ? (process.env.DEEPSEEK_MODEL || process.env.AI_MODEL)
           : prov === 'modelscope' ? (process.env.MODELSCOPE_MODEL || process.env.AI_MODEL)
+          : prov === 'google' ? (process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || process.env.AI_MODEL)
           : (process.env.OPENAI_MODEL || process.env.AI_MODEL);
         if (envModel) {
           await quickSetConfigValue('ai.model', envModel);
         }
       }
 
-      // 若选择了 modelscope，且未指定 intent/planner 模型，使用用户期望的默认
-      if ((options.provider === 'modelscope' || process.env.AI_PROVIDER === 'modelscope')) {
-      const { quickGetConfigValue } = await import('../storage');
-      const intentModelCurrent = await quickGetConfigValue<string>('ai.intentModel');
-      const plannerModelCurrent = await quickGetConfigValue<string>('ai.plannerModel');
-      if (!intentModelCurrent) {
-      await quickSetConfigValue('ai.intentModel', 'deepseek-ai/DeepSeek-V2-Lite-Chat');
+      // 若选择了 google，仅在缺省时补齐 baseUrl，不强制覆盖模型配置
+      if (options.provider === 'google' || process.env.AI_PROVIDER === 'google') {
+        const { quickGetConfigValue } = await import('../storage');
+        const currentBaseUrl = await quickGetConfigValue<string>('ai.baseUrl');
+        if (!currentBaseUrl) {
+          await quickSetConfigValue('ai.baseUrl', process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta');
+        }
+        const currentModel = await quickGetConfigValue<string>('ai.model');
+        if (!currentModel) {
+          logger.warn('AI model is not configured for Google provider. Please set --model or ai.model in config.');
+        }
       }
-      if (!plannerModelCurrent) {
-      await quickSetConfigValue('ai.plannerModel', 'deepseek-ai/DeepSeek-V3.1');
-      }
-      }
-      // 对于 modelscope，不再自动设置默认模型，请通过 --baseUrl/--model/--intentModel/--plannerModel 明确指定
       
       // 初始化 AI（确保 AIClientManager 预先加载配置并建立连接）
       const { initializeAI } = await import('../ai/config');

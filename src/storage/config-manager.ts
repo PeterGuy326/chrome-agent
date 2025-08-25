@@ -91,7 +91,7 @@ export interface AppConfig {
   // AI/LLM 配置
   ai: {
     enabled: boolean;
-    provider: 'openai' | 'deepseek' | 'custom' | 'modelscope';
+    provider: 'openai' | 'deepseek' | 'custom' | 'modelscope' | 'google';
     model: string;
     baseUrl?: string;
     apiKey?: string;
@@ -224,27 +224,42 @@ export class ConfigManager {
           const p = process.env.AI_PROVIDER || 'openai';
           if (p === 'deepseek') return process.env.DEEPSEEK_MODEL || 'deepseek-chat';
           if (p === 'modelscope') return process.env.MODELSCOPE_MODEL || process.env.AI_MODEL || 'gpt-3.5-turbo';
-          return process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
+          if (p === 'google') return process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || process.env.AI_MODEL || 'gemini-1.5-flash';
+          return process.env.OPENAI_MODEL || process.env.AI_MODEL || 'gpt-3.5-turbo';
         })(),
         baseUrl: (() => {
           const p = process.env.AI_PROVIDER || 'openai';
           if (p === 'deepseek') return process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
           if (p === 'modelscope') return process.env.MODELSCOPE_BASE_URL;
+          if (p === 'google') return process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
           return process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
         })(),
         apiKey: (() => {
           const p = process.env.AI_PROVIDER || 'openai';
           if (p === 'deepseek') return process.env.DEEPSEEK_API_KEY;
           if (p === 'modelscope') return process.env.MODELSCOPE_API_KEY || process.env.AI_API_KEY;
-          return process.env.OPENAI_API_KEY;
+          if (p === 'google') return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.AI_API_KEY;
+          return process.env.OPENAI_API_KEY || process.env.AI_API_KEY;
         })(),
         temperature: parseFloat(process.env.AI_TEMPERATURE || '0.2'),
         maxTokens: parseInt(process.env.AI_MAX_TOKENS || '2048', 10),
         topP: parseFloat(process.env.AI_TOP_P || '1'),
         systemPrompt: process.env.AI_SYSTEM_PROMPT,
         timeout: parseInt(process.env.AI_TIMEOUT || '60000', 10),
-        intentModel: process.env.AI_INTENT_MODEL || ((process.env.AI_PROVIDER || 'openai') === 'modelscope' ? 'deepseek-ai/DeepSeek-V2-Lite-Chat' : undefined),
-        plannerModel: process.env.AI_PLANNER_MODEL || ((process.env.AI_PROVIDER || 'openai') === 'modelscope' ? 'deepseek-ai/DeepSeek-V3.1' : undefined),
+        intentModel: (() => {
+          const p = process.env.AI_PROVIDER || 'openai';
+          if (process.env.AI_INTENT_MODEL) return process.env.AI_INTENT_MODEL;
+          if (p === 'modelscope') return 'deepseek-ai/DeepSeek-V2-Lite-Chat';
+          if (p === 'google') return process.env.GOOGLE_INTENT_MODEL || process.env.GEMINI_INTENT_MODEL || 'gemini-1.5-flash';
+          return undefined;
+        })(),
+        plannerModel: (() => {
+          const p = process.env.AI_PROVIDER || 'openai';
+          if (process.env.AI_PLANNER_MODEL) return process.env.AI_PLANNER_MODEL;
+          if (p === 'modelscope') return 'deepseek-ai/DeepSeek-V3.1';
+          if (p === 'google') return process.env.GOOGLE_PLANNER_MODEL || process.env.GEMINI_PLANNER_MODEL || 'gemini-1.5-pro';
+          return undefined;
+        })(),
         // 新增默认 Planner 配置
         planner: {
           retry: {
@@ -438,7 +453,7 @@ export class ConfigManager {
 
       // AI/LLM 配置验证
       { path: 'ai.enabled', type: 'boolean', required: true },
-      { path: 'ai.provider', type: 'string', required: true, enum: ['openai', 'deepseek', 'custom', 'modelscope'] },
+      { path: 'ai.provider', type: 'string', required: true, enum: ['openai', 'deepseek', 'custom', 'modelscope', 'google'] },
       { path: 'ai.model', type: 'string', required: true },
       { path: 'ai.temperature', type: 'number', required: true, min: 0, max: 2 },
       { path: 'ai.maxTokens', type: 'number', required: true, min: 1, max: 200000 },

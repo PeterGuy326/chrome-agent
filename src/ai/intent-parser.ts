@@ -3,7 +3,6 @@
  * 使用 LLM 将自然语言指令转换为半结构化的任务需求
  */
 
-import { OpenAI } from 'openai';
 import { ActionType, SelectorType } from '../core/types';
 import { ParsedIntent, IntentPattern } from '../core/types';
 import { getDefaultLogger } from '../core/logger';
@@ -15,7 +14,7 @@ import { getAIClientManager } from './config';
  */
 export class AIIntentParser {
   private logger = getDefaultLogger();
-  private client: OpenAI | null = null;
+  private client: any | null = null;
   private patterns: IntentPattern[] = []; // 为兼容性保留
   private systemPrompt: string;
 
@@ -58,15 +57,22 @@ export class AIIntentParser {
       if (!this.client) {
         throw new Error('AI client not initialized or disabled');
       }
-  
+
+       const cfg = getAIClientManager().getConfig();
+       const selectedModel = cfg.intentModel || cfg.model;
+       if (!selectedModel) {
+         this.logger.warn('No intentModel/model configured; AI intent parsing cannot proceed.');
+         throw new Error('AI model not configured for intent parsing');
+       }
+
        const prompt = this.buildPrompt(text, context);
        const response = await this.client.chat.completions.create({
-         model: getAIClientManager().getConfig().intentModel || getAIClientManager().getConfig().model,
+         model: selectedModel,
          messages: [
            { role: 'system', content: this.systemPrompt },
            { role: 'user', content: prompt }
          ],
-         temperature: getAIClientManager().getConfig().temperature || 0.2,
+         temperature: cfg.temperature || 0.2,
          max_tokens: 2048,
          response_format: { type: 'json_object' }
        });
