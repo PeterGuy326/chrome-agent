@@ -573,9 +573,17 @@ export class Executor {
     await selectorResult.element.focus();
     
     // 更高效的清空方式：使用键盘快捷键
-    await context.page.keyboard.down('Control');
-    await context.page.keyboard.press('KeyA');
-    await context.page.keyboard.up('Control');
+    // 根据操作系统选择合适的快捷键（Mac 使用 Cmd，其他系统使用 Ctrl）
+    const isMac = process.platform === 'darwin';
+    if (isMac) {
+      await context.page.keyboard.down('Meta');
+      await context.page.keyboard.press('KeyA');
+      await context.page.keyboard.up('Meta');
+    } else {
+      await context.page.keyboard.down('Control');
+      await context.page.keyboard.press('KeyA');
+      await context.page.keyboard.up('Control');
+    }
     
     // 优化输入：减少延迟，提高性能
     await selectorResult.element.type(text, { delay: 20 });
