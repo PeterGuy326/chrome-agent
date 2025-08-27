@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chrome Agent + Open WebUI 集成演示</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .status {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .service {
+            flex: 1;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .service.running {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .service.pending {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+        .demo-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+        }
+        .demo-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+        .demo-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .demo-button:hover {
+            background: #0056b3;
+        }
+        .demo-result {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .links {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-top: 30px;
+        }
+        .link {
+            padding: 12px 24px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: background 0.3s;
+        }
+        .link:hover {
+            background: #218838;
+        }
+        .link.disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .plan-section {
+            border-left: 4px solid #007bff;
+            background: #f8f9fa;
+        }
+        .logs-section {
+            border-left: 4px solid #28a745;
+            background: #f8f9fa;
+        }
+        .demo-result.plan-details {
+            background: #e3f2fd;
+            border: 1px solid #bbdefb;
+            color: #0d47a1;
+        }
+        .demo-result.execution-logs {
+            background: #e8f5e8;
+            border: 1px solid #c8e6c9;
+            color: #1b5e20;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Chrome Agent + Open WebUI 集成演示</h1>
+        
+        <div class="status">
+            <div class="service running">
+                <h3>✅ Chrome Agent</h3>
+                <p>API服务器运行中</p>
+                <small>http://localhost:3000</small>
+            </div>
+            <div class="service pending" id="webui-status">
+                <h3>⏳ Open WebUI</h3>
+                <p>正在启动中...</p>
+                <small>http://localhost:8080</small>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h3>🧪 Chrome Agent API 测试</h3>
+            <input type="text" class="demo-input" id="task-input" 
+                   placeholder="输入浏览器任务，例如：打开 https://example.com 并提取标题">
+            <button class="demo-button" onclick="testChromeAgent()">执行任务</button>
+            <div class="demo-result" id="task-result"></div>
+        </div>
+
+        <div class="demo-section plan-section">
+            <h3>📋 生成的计划详情</h3>
+            <div class="demo-result plan-details" id="plan-details" style="display: none;"></div>
+        </div>
+
+        <div class="demo-section logs-section">
+            <h3>⚡ 执行步骤日志</h3>
+            <div class="demo-result execution-logs" id="execution-logs" style="display: none;"></div>
+        </div>
+
+        <div class="demo-section">
+            <h3>📋 Pipeline 集成说明</h3>
+            <p>Chrome Agent Pipeline 已创建，包含以下功能：</p>
+            <ul>
+                <li>🔍 自动检测浏览器相关任务</li>
+                <li>🌐 URL 自动识别</li>
+                <li>📊 数据提取优化</li>
+                <li>❌ 智能错误处理</li>
+            </ul>
+            <p><strong>支持的关键词：</strong>打开网页、访问、浏览、提取数据、抓取、截图、点击、输入、搜索等</p>
+        </div>
+
+        <div class="links">
+            <a href="http://localhost:3000/docs" class="link" target="_blank">📚 Chrome Agent API 文档</a>
+            <a href="http://localhost:8080" class="link" id="webui-link" target="_blank">🌐 Open WebUI 界面</a>
+        </div>
+    </div>
+
+    <script>
+        // 检查 Open WebUI 状态
+        function checkWebUIStatus() {
+            fetch('http://localhost:8080/')
+                .then(response => {
+                    if (response.ok) {
+                        document.getElementById('webui-status').className = 'service running';
+                        document.getElementById('webui-status').innerHTML = `
+                            <h3>✅ Open WebUI</h3>
+                            <p>服务运行中</p>
+                            <small>http://localhost:8080</small>
+                        `;
+                        document.getElementById('webui-link').classList.remove('disabled');
+                    }
+                })
+                .catch(() => {
+                    setTimeout(checkWebUIStatus, 5000);
+                });
+        }
+
+        // 测试 Chrome Agent API
+        function testChromeAgent() {
+            const task = document.getElementById('task-input').value;
+            const resultDiv = document.getElementById('task-result');
+            const planDiv = document.getElementById('plan-details');
+            const logsDiv = document.getElementById('execution-logs');
+            
+            if (!task) {
+                resultDiv.textContent = '请输入任务描述';
+                return;
+            }
+
+            // 清空之前的结果
+            resultDiv.textContent = '正在执行任务...';
+            planDiv.style.display = 'none';
+            logsDiv.style.display = 'none';
+            planDiv.textContent = '';
+            logsDiv.textContent = '';
+
+            // 开始监听服务器日志
+            startLogMonitoring();
+
+            fetch('http://localhost:3000/api/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'chrome-agent-v1',
+                    messages: [
+                        { role: 'user', content: task }
+                    ],
+                    stream: false
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.choices && data.choices[0] && data.choices[0].message) {
+                    resultDiv.textContent = data.choices[0].message.content;
+                } else {
+                    resultDiv.textContent = JSON.stringify(data, null, 2);
+                }
+                // 停止日志监听
+                setTimeout(() => stopLogMonitoring(), 2000);
+            })
+            .catch(error => {
+                resultDiv.textContent = '错误: ' + error.message;
+                stopLogMonitoring();
+            });
+        }
+
+        // 日志监听相关变量
+        let logMonitorInterval = null;
+        let lastLogTimestamp = Date.now();
+
+        // 开始监听日志
+        function startLogMonitoring() {
+            if (logMonitorInterval) {
+                clearInterval(logMonitorInterval);
+            }
+            
+            logMonitorInterval = setInterval(() => {
+                fetchRecentLogs();
+            }, 1000); // 每秒检查一次
+        }
+
+        // 停止监听日志
+        function stopLogMonitoring() {
+            if (logMonitorInterval) {
+                clearInterval(logMonitorInterval);
+                logMonitorInterval = null;
+            }
+        }
+
+        // 获取最近的日志
+        function fetchRecentLogs() {
+            // 这里我们通过检查控制台输出来模拟日志获取
+            // 在实际实现中，可能需要服务器提供日志API
+            
+            // 模拟计划详情显示
+            const planDiv = document.getElementById('plan-details');
+            const logsDiv = document.getElementById('execution-logs');
+            
+            // 检查是否有新的计划生成（通过时间戳模拟）
+            if (planDiv.textContent === '' && Math.random() > 0.7) {
+                planDiv.style.display = 'block';
+                planDiv.textContent = `计划生成中...
+
+等待服务器返回详细计划信息...
+
+提示：查看浏览器控制台或服务器终端获取完整的计划详情和执行日志。
+
+计划将包含以下信息：
+- 计划ID和任务ID
+- 风险等级评估
+- 预估执行时间
+- 详细执行步骤
+- 选择器候选列表
+- 等待条件和重试配置`;
+            }
+            
+            // 模拟执行日志
+            if (logsDiv.textContent === '' && Math.random() > 0.8) {
+                logsDiv.style.display = 'block';
+                logsDiv.textContent = `执行日志监听中...
+
+实时执行步骤将在这里显示...
+
+提示：
+1. 详细的计划生成信息请查看服务器终端
+2. 执行过程中的每个步骤都会被记录
+3. 包括页面导航、元素定位、操作执行等
+
+当前状态：等待任务开始执行...`;
+            }
+        }
+
+        // 页面加载时检查状态
+        checkWebUIStatus();
+        setInterval(checkWebUIStatus, 10000);
+    </script>
+</body>
+</html>

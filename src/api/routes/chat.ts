@@ -267,17 +267,17 @@ async function processUserRequest(userInput: string, requestId: string) {
     // 1. 解析用户意图
     logger.info('Parsing user intent...');
     const intents = await intentParser.parseIntent(userInput);
-    const intent = intents[0]; // 使用第一个意图
+    logger.info(`Parsed ${intents.length} intents:`, intents.map(i => ({ action: i.action, confidence: i.confidence })));
     
-    // 2. 生成执行计划
-  logger.info('Generating plan...');
-  const plan = await planner.generatePlan(requestId, [intent]);
+    // 2. 生成执行计划 - 使用所有相关意图
+    logger.info('Generating plan...');
+    const plan = await planner.generatePlan(requestId, intents);
   
   // 3. 创建任务
   const task = await taskManager.createTask(userInput, {
     name: `Chat Request ${requestId}`,
     userId: 'api-user',
-    metadata: { requestId, intent }
+    metadata: { requestId, intents }
   });
   
   // 4. 执行任务
@@ -339,19 +339,18 @@ async function processUserRequestStreaming(
     // 1. 解析用户意图
     onChunk('正在解析用户意图...\n');
     const intents = await intentParser.parseIntent(userInput);
-    const intent = intents[0]; // 使用第一个意图
-    onChunk(`意图解析完成: ${intent.action}\n`);
+    onChunk(`意图解析完成: 识别到${intents.length}个意图\n`);
     
-    // 2. 生成执行计划
+    // 2. 生成执行计划 - 使用所有相关意图
     onChunk('正在生成执行计划...\n');
-    const plan = await planner.generatePlan(requestId, [intent]);
+    const plan = await planner.generatePlan(requestId, intents);
     onChunk(`计划生成完成，共 ${plan.steps.length} 个步骤\n`);
     
     // 3. 创建任务
     const task = await taskManager.createTask(userInput, {
       name: `Chat Request ${requestId}`,
       userId: 'api-user',
-      metadata: { requestId, intent }
+      metadata: { requestId, intents }
     });
     
     // 4. 执行任务（带进度回调）

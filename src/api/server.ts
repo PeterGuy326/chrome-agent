@@ -8,6 +8,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import path from 'path';
 import { getDefaultLogger } from '../core/logger';
 import { getDefaultEventBus } from '../core/event-bus';
 import { getDefaultErrorHandler, ErrorCode } from '../core/error-handler';
@@ -16,6 +17,7 @@ import { chatRouter } from './routes/chat';
 import { modelsRouter } from './routes/models';
 import { healthRouter } from './routes/health';
 import { metricsRouter } from './routes/metrics';
+import { getDefaultExecutor } from '../executor';
 
 export interface ServerConfig {
   port: number;
@@ -68,8 +70,11 @@ export class ApiServer {
 
     // CORS配置
     this.app.use(cors({
-      origin: this.config.corsOrigins,
-      credentials: true,
+      origin: (origin, callback) => {
+        // 允许所有来源，包括localhost和file://
+        callback(null, true);
+      },
+      credentials: false, // 修复CORS问题：当允许所有来源时不能设置credentials为true
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
     }));
@@ -135,6 +140,14 @@ export class ApiServer {
     if (this.config.enableMetrics) {
       this.app.use(`${prefix}/metrics`, metricsRouter);
     }
+
+    // 静态文件服务 - demo.html
+    this.app.get('/demo.html', (req, res) => {
+      // 设置CSP头部允许内联脚本
+      res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:3000 http://localhost:8080");
+      const demoPath = path.join(__dirname, '../../demo.html');
+      res.sendFile(demoPath);
+    });
 
     // 根路径
     this.app.get('/', (req, res) => {
@@ -210,10 +223,20 @@ export class ApiServer {
    * 启动服务器
    */
   async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       try {
-        this.server = this.app.listen(this.config.port, this.config.host, () => {
+        this.server = this.app.listen(this.config.port, this.config.host, async () => {
           this.logger.info(`API server started on ${this.config.host}:${this.config.port}`);
+          
+          // 初始化默认Executor实例
+          try {
+            const executor = getDefaultExecutor();
+            await executor.initialize();
+            this.logger.info('Default executor initialized successfully');
+          } catch (error) {
+            this.logger.warn('Failed to initialize default executor:', error);
+            // 不阻止服务器启动，但记录警告
+          }
           
           this.eventBus.emit(EventType.API_SERVER_STARTED, {
             host: this.config.host,

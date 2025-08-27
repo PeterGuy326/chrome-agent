@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  chrome-agent:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - HEADLESS=true
+      - LOG_LEVEL=info
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+      - ./exports:/app/exports
+    restart: unless-stopped
+    networks:
+      - webui-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "8080:8080"
+    environment:
+      - WEBUI_NAME=Chrome Agent WebUI
+      - DEFAULT_MODELS=gpt-3.5-turbo
+      - ENABLE_SIGNUP=false
+      - WEBUI_AUTH=false
+    volumes:
+      - open-webui-data:/app/backend/data
+      - ./chrome_agent_pipeline.py:/app/backend/data/pipelines/chrome_agent_pipeline.py
+    restart: unless-stopped
+    networks:
+      - webui-network
+    depends_on:
+      chrome-agent:
+        condition: service_healthy
+
+volumes:
+  open-webui-data:
+
+networks:
+  webui-network:
+    driver: bridge

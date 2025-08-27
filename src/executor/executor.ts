@@ -88,6 +88,9 @@ export class Executor {
   private logger = getDefaultLogger();
   private eventBus = getDefaultEventBus();
   private errorHandler = getDefaultErrorHandler();
+  // 新增：元素选择器缓存，提高查找性能
+  private selectorCache: Map<string, { element: ElementHandle | null; timestamp: number }> = new Map();
+  private readonly CACHE_TTL = 5000; // 缓存5秒
 
   constructor(config: Partial<ExecutorConfig> = {}) {
     this.config = {
@@ -101,8 +104,8 @@ export class Executor {
       enableLogging: true,
       enableMetrics: true,
       maxConcurrentPages: 5,
-      navigationTimeout: 30000,
-      elementTimeout: 10000,
+      navigationTimeout: 60000,
+      elementTimeout: 15000,
       // 反爬增强默认开启
       stealth: true,
       devtools: false,
@@ -216,6 +219,9 @@ export class Executor {
       // 执行步骤
       const stepResults: StepResult[] = [];
       let currentStep = 0;
+      
+      // 定期清理过期缓存
+      this.cleanupExpiredCache();
       
       for (const step of plan.steps) {
         currentStep++;
@@ -425,18 +431,54 @@ export class Executor {
     
     this.logger.debug(`Navigating to: ${url}`);
     
-    const response = await context.page.goto(url, {
-      waitUntil: 'domcontentloaded',
-      timeout: this.config.navigationTimeout
-    });
-
-    // 额外等待稳定：网络空闲或首屏稳定
+    let response: any = null;
+    let lastError: Error | null = null;
+    const maxRetries = 3;
+    
+    // 重试机制
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        this.logger.debug(`Navigation attempt ${attempt}/${maxRetries}`);
+        
+        // 尝试导航，使用更宽松的等待策略
+        response = await context.page.goto(url, {
+          waitUntil: 'domcontentloaded',
+          timeout: this.config.navigationTimeout
+        });
+        
+        // 如果成功，跳出重试循环
+        break;
+        
+      } catch (error: any) {
+        lastError = error;
+        this.logger.warn(`Navigation attempt ${attempt} failed: ${error.message}`);
+        
+        if (attempt < maxRetries) {
+          // 等待后重试
+          await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+          
+          // 尝试刷新页面状态
+          try {
+            await context.page.evaluate(() => window.stop());
+          } catch {}
+        }
+      }
+    }
+    
+    // 如果所有重试都失败，抛出最后的错误
+    if (!response && lastError) {
+      throw lastError;
+    }
+    
+    // 额外等待页面稳定
     try {
-      await context.page.waitForNetworkIdle({ idleTime: 800, timeout: Math.min(10000, this.config.navigationTimeout) });
-    } catch {}
-    try {
-      await context.page.waitForFunction(() => document.readyState === 'complete', { timeout: Math.min(10000, this.config.navigationTimeout) });
-    } catch {}
+      await context.page.waitForFunction(
+        () => document.readyState === 'complete',
+        { timeout: 10000 }
+      );
+    } catch (e) {
+      this.logger.debug('Page readyState check timeout, continuing...');
+    }
     
     // 更新上下文URL
     context.currentUrl = context.page.url();
@@ -449,7 +491,7 @@ export class Executor {
   }
 
   /**
-   * 执行点击操作
+   * 执行点击操作（优化版）
    */
   private async executeClick(step: Step, context: ExecutionContext): Promise<any> {
     const selectorResult = await this.findElement(step.selectorCandidates, context.page);
@@ -461,29 +503,59 @@ export class Executor {
     // 滚动到元素可见
     await selectorResult.element.scrollIntoView();
     
-    // 等待元素可点击
+    // 等待元素可点击（增强版检查）
     await context.page.waitForFunction(
       (element) => {
         const el = element as Element;
         const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
         return rect.width > 0 && rect.height > 0 && 
-               window.getComputedStyle(el).visibility !== 'hidden';
+               style.visibility !== 'hidden' &&
+               style.display !== 'none' &&
+               style.opacity !== '0' &&
+               !el.hasAttribute('disabled');
       },
       { timeout: this.config.elementTimeout },
       selectorResult.element
     );
     
-    // 执行点击
-    await selectorResult.element.click();
+    // 重试机制的点击
+    let clicked = false;
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // 短暂等待确保元素稳定
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // 执行点击
+        await selectorResult.element.click();
+        clicked = true;
+        break;
+      } catch (error) {
+        lastError = error as Error;
+        this.logger.debug(`Click attempt ${attempt} failed:`, error);
+        
+        if (attempt < 3) {
+          // 等待后重试
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+    }
+    
+    if (!clicked && lastError) {
+      throw new Error(`Failed to click element after 3 attempts: ${lastError.message}`);
+    }
     
     return {
       selector: selectorResult.selector,
-      clicked: true
+      clicked: true,
+      attempts: clicked ? 1 : 3
     };
   }
 
   /**
-   * 执行输入操作
+   * 执行输入操作（优化版）
    */
   private async executeType(step: Step, context: ExecutionContext): Promise<any> {
     const text = step.params?.text;
@@ -497,16 +569,27 @@ export class Executor {
       throw new Error(`Element not found for typing: ${selectorResult.error || 'Unknown error'}`);
     }
     
-    // 清空现有内容
-    await selectorResult.element.click({ clickCount: 3 });
+    // 聚焦元素
+    await selectorResult.element.focus();
     
-    // 输入文本
-    await selectorResult.element.type(text, { delay: 50 });
+    // 更高效的清空方式：使用键盘快捷键
+    await context.page.keyboard.down('Control');
+    await context.page.keyboard.press('KeyA');
+    await context.page.keyboard.up('Control');
+    
+    // 优化输入：减少延迟，提高性能
+    await selectorResult.element.type(text, { delay: 20 });
+    
+    // 验证输入是否成功
+    const inputValue = await selectorResult.element.evaluate((el: any) => el.value || el.textContent);
+    const success = inputValue?.includes(text) || false;
     
     return {
       selector: selectorResult.selector,
       text,
-      typed: true
+      typed: true,
+      verified: success,
+      actualValue: inputValue
     };
   }
 
@@ -636,7 +719,7 @@ export class Executor {
   }
 
   /**
-   * 查找元素
+   * 查找元素（带缓存优化）
    */
   private async findElement(candidates: SelectorCandidate[], page: Page): Promise<SelectorResult> {
     // 按分数排序候选选择器
@@ -644,6 +727,28 @@ export class Executor {
     
     for (const candidate of sortedCandidates) {
       try {
+        // 检查缓存
+        const cacheKey = `${candidate.type}:${candidate.value}`;
+        const cached = this.selectorCache.get(cacheKey);
+        const now = Date.now();
+        
+        if (cached && (now - cached.timestamp) < this.CACHE_TTL) {
+          // 验证缓存的元素是否仍然有效
+          try {
+            if (cached.element) {
+              await cached.element.boundingBox(); // 检查元素是否仍然存在
+              return {
+                element: cached.element,
+                selector: candidate,
+                found: true
+              };
+            }
+          } catch {
+            // 缓存的元素已失效，清除缓存
+            this.selectorCache.delete(cacheKey);
+          }
+        }
+        
         let element: ElementHandle | null = null;
         
         switch (candidate.type) {
@@ -689,6 +794,13 @@ export class Executor {
         }
         
         if (element) {
+          // 将找到的元素加入缓存
+          const cacheKey = `${candidate.type}:${candidate.value}`;
+          this.selectorCache.set(cacheKey, {
+            element,
+            timestamp: Date.now()
+          });
+          
           return {
             element,
             selector: candidate,
@@ -722,14 +834,14 @@ export class Executor {
         
       case WaitType.ELEMENT:
         await context.page.waitForSelector(condition.selector || 'body', {
-          timeout: condition.timeout
+          timeout: condition.timeout || this.config.elementTimeout
         });
         break;
         
       case WaitType.NAVIGATION:
         await context.page.waitForNavigation({
           waitUntil: 'networkidle2',
-          timeout: condition.timeout
+          timeout: condition.timeout || this.config.navigationTimeout
         });
         context.currentUrl = context.page.url();
         break;
@@ -914,6 +1026,7 @@ export class Executor {
       // 清理缓存
       this.pages.clear();
       this.contexts.clear();
+      this.selectorCache.clear();
       
       this.logger.info('Executor closed successfully');
       
@@ -922,6 +1035,18 @@ export class Executor {
     } catch (error) {
       this.logger.error('Failed to close executor:', error);
       throw error;
+    }
+  }
+
+  /**
+   * 清理过期的选择器缓存
+   */
+  private cleanupExpiredCache(): void {
+    const now = Date.now();
+    for (const [key, cached] of this.selectorCache.entries()) {
+      if (now - cached.timestamp > this.CACHE_TTL) {
+        this.selectorCache.delete(key);
+      }
     }
   }
 }

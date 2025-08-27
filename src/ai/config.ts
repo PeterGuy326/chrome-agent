@@ -17,7 +17,8 @@ export enum AIProvider {
   DEEPSEEK = 'deepseek',
   CUSTOM = 'custom',
   MODELSCOPE = 'modelscope',
-  GOOGLE = 'google'
+  GOOGLE = 'google',
+  BAILIAN = 'bailian'
 }
 
 /**

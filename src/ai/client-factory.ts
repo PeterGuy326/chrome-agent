@@ -19,6 +19,7 @@ export interface ClientFactoryOptions {
  * - provider === 'google' -> Gemini OpenAI-compatible wrapper
  * - provider === 'deepseek' -> OpenAI SDK with DeepSeek baseURL default
  * - provider === 'modelscope' -> OpenAI SDK (requires baseUrl)
+ * - provider === 'bailian' -> OpenAI SDK with Alibaba Bailian baseURL
  * - provider === 'custom' -> OpenAI SDK (requires baseUrl)
  * - others/openai -> OpenAI SDK
  */
@@ -46,6 +47,9 @@ export function createOpenAICompatibleClient(provider: string, options: ClientFa
   switch (p) {
     case 'deepseek':
       clientConfig.baseURL = options.baseUrl || 'https://api.deepseek.com';
+      break;
+    case 'bailian':
+      clientConfig.baseURL = options.baseUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
       break;
     case 'modelscope':
       if (!options.baseUrl) throw new Error('Provider "modelscope" requires baseUrl.');

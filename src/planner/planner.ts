@@ -58,9 +58,24 @@ export class Planner {
   private strategies: Map<string, PlanningStrategy> = new Map();
   private logger = getDefaultLogger();
   private eventBus = getDefaultEventBus();
+  private navigationTimeout: number = 60000;
+  private elementTimeout: number = 15000;
 
   constructor() {
     this.initializeDefaultStrategies();
+    this.loadTimeoutConfig();
+  }
+
+  /**
+   * 加载超时配置
+   */
+  private async loadTimeoutConfig(): Promise<void> {
+    try {
+      this.navigationTimeout = await quickGetConfigValue<number>('executor.navigationTimeout') ?? 60000;
+      this.elementTimeout = await quickGetConfigValue<number>('executor.elementTimeout') ?? 15000;
+    } catch (error) {
+      this.logger.warn('Failed to load timeout config, using defaults', { error });
+    }
   }
 
   /**
@@ -96,7 +111,7 @@ export class Planner {
     const normalizeWait = (wait: any, action: ActionType) => {
       const rawType = (wait?.type || (action === ActionType.NAVIGATE ? 'NAVIGATION' : 'ELEMENT')).toString().toUpperCase();
       const type = (WaitType as any)[rawType] ?? (action === ActionType.NAVIGATE ? WaitType.NAVIGATION : WaitType.ELEMENT);
-      const timeout = typeof wait?.timeout === 'number' ? wait.timeout : (action === ActionType.NAVIGATE ? 30000 : 5000);
+      const timeout = typeof wait?.timeout === 'number' ? wait.timeout : (action === ActionType.NAVIGATE ? this.navigationTimeout : this.elementTimeout);
       const value = wait?.value;
       return { type, timeout, value } as WaitCondition;
     };
@@ -141,17 +156,17 @@ export class Planner {
       '{ "action":"NAVIGATE|CLICK|TYPE|SELECT|SCROLL|WAIT|EXTRACT|SCREENSHOT|EVALUATE|HOVER|PRESS_KEY",',
       '  "selectorCandidates":[{"type":"css|xpath|text|aria-label|role|data-testid|id|class|tag|name","value":"...","score":80,"description":"...","fallback":false}],',
       '  "params":{"url":"...","text":"...","value":"...","key":"...","options":{}},',
-      '  "waitFor":{"type":"NAVIGATION|ELEMENT|TIMEOUT|FUNCTION|NETWORK_IDLE","value":"...","timeout":5000},',
+      '  "waitFor":{"type":"NAVIGATION|ELEMENT|TIMEOUT|FUNCTION|NETWORK_IDLE","value":"...","timeout":${this.elementTimeout}},',
       '  "retries":{"maxAttempts":2,"delay":1000,"backoff":true},',
-      '  "timeout":30000,',
+      `  "timeout":${this.navigationTimeout},`,
       '  "description":"...",',
       '  "isOptional":false }',
       '示例（仅供参考，不要在最终输出中包含本行或任何解释文本）：',
       '{"steps":[',
-      ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开主页","isOptional":false},',
-      ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[type=\\"search\\"]","score":85,"description":"站内搜索框"}],"params":{"text":"iPhone 15"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入关键词","isOptional":false},',
-      ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
-      ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".product-item","score":70,"description":"商品卡片"}],"params":{"options":{"fields":["title","price","link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取商品信息","isOptional":false}',
+      ` {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://example.com"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"打开主页","isOptional":false},`,
+      ` {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[type=\\"search\\"]","score":85,"description":"站内搜索框"}],"params":{"text":"iPhone 15"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入关键词","isOptional":false},`,
+      ` {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"提交搜索","isOptional":false},`,
+      ` {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".product-item","score":70,"description":"商品卡片"}],"params":{"options":{"fields":["title","price","link"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取商品信息","isOptional":false}`,
       ']}'
     ].join('\n');
 
@@ -218,8 +233,8 @@ export class Planner {
       domainExamples.push(
         '// 新闻网站示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://news.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开新闻站点","isOptional":false},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".news-item","score":70,"description":"新闻列表项"}],"params":{"options":{"fields":["title","time","source","link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取新闻信息","isOptional":false}',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://news.example.com"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"打开新闻站点","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".news-item","score":70,"description":"新闻列表项"}],"params":{"options":{"fields":["title","time","source","link"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取新闻信息","isOptional":false}',
         ']}'
       );
     }
@@ -229,11 +244,11 @@ export class Planner {
       domainExamples.push(
         '// 社交媒体示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://social.example.com/search"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"进入社交搜索页","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[type=\\"search\\"]","score":80,"description":"站内搜索框"}],"params":{"text":"热点话题"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入关键词","isOptional":false},',
-        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
-        ' {"action":"SCROLL","selectorCandidates":[],"params":{"value":"page_down"},"waitFor":{"type":"ELEMENT","timeout":2000},"retries":{"maxAttempts":1,"delay":500,"backoff":false},"timeout":5000,"description":"滚动加载更多","isOptional":true},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".post-card","score":70,"description":"帖子卡片"}],"params":{"options":{"fields":["author","time","content","link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取帖子数据","isOptional":false}',
+        ` {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://social.example.com/search"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"进入社交搜索页","isOptional":false},`,
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[type=\\"search\\"]","score":80,"description":"站内搜索框"}],"params":{"text":"热点话题"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入关键词","isOptional":false},',
+        ` {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"提交搜索","isOptional":false},`,
+        ' {"action":"SCROLL","selectorCandidates":[],"params":{"value":"page_down"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":1,"delay":500,"backoff":false},"timeout":${this.elementTimeout},"description":"滚动加载更多","isOptional":true},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".post-card","score":70,"description":"帖子卡片"}],"params":{"options":{"fields":["author","time","content","link"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取帖子数据","isOptional":false}',
         ']}'
       );
     }
@@ -243,11 +258,11 @@ export class Planner {
       domainExamples.push(
         '// 视频网站示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://video.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开视频网站","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[placeholder*=\\"搜索\\"]","score":85,"description":"视频搜索框"}],"params":{"text":"教程视频"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入搜索关键词","isOptional":false},',
-        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
-        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".video-item:first-child .video-title","score":75,"description":"第一个视频标题"}],"params":{},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"点击视频进入播放页","isOptional":false},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".video-info","score":70,"description":"视频信息区域"}],"params":{"options":{"fields":["title","author","views","duration","description"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取视频信息","isOptional":false}',
+        ` {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://video.example.com"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"打开视频网站","isOptional":false},`,
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[placeholder*=\\"搜索\\"]","score":85,"description":"视频搜索框"}],"params":{"text":"教程视频"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入搜索关键词","isOptional":false},',
+        ` {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"提交搜索","isOptional":false},`,
+        ` {"action":"CLICK","selectorCandidates":[{"type":"css","value":".video-item:first-child .video-title","score":75,"description":"第一个视频标题"}],"params":{},"waitFor":{"type":"NAVIGATION","timeout":${this.navigationTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.navigationTimeout},"description":"点击视频进入播放页","isOptional":false},`,
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".video-info","score":70,"description":"视频信息区域"}],"params":{"options":{"fields":["title","author","views","duration","description"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取视频信息","isOptional":false}',
         ']}'
       );
     }
@@ -257,11 +272,11 @@ export class Planner {
       domainExamples.push(
         '// 地图导航示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://maps.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开地图网站","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"#origin","score":90,"description":"起点输入框"}],"params":{"text":"北京站"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入起点","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"#destination","score":90,"description":"终点输入框"}],"params":{"text":"天安门广场"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入终点","isOptional":false},',
-        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".route-search-btn","score":85,"description":"搜索路线按钮"}],"params":{},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"搜索路线","isOptional":false},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".route-result","score":75,"description":"路线结果"}],"params":{"options":{"fields":["distance","duration","route_steps"]}},"waitFor":{"type":"ELEMENT","timeout":8000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":20000,"description":"抽取路线信息","isOptional":false}',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://maps.example.com"},"waitFor":{"type":"NAVIGATION","timeout":' + this.navigationTimeout + '},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":' + this.navigationTimeout + ',"description":"打开地图网站","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"#origin","score":90,"description":"起点输入框"}],"params":{"text":"北京站"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入起点","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"#destination","score":90,"description":"终点输入框"}],"params":{"text":"天安门广场"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入终点","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".route-search-btn","score":85,"description":"搜索路线按钮"}],"params":{},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"搜索路线","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".route-result","score":75,"description":"路线结果"}],"params":{"options":{"fields":["distance","duration","route_steps"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取路线信息","isOptional":false}',
         ']}'
       );
     }
@@ -271,10 +286,10 @@ export class Planner {
       domainExamples.push(
         '// 学术文档示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://scholar.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开学术搜索","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[name=\\"q\\"]","score":85,"description":"学术搜索框"}],"params":{"text":"machine learning"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入搜索关键词","isOptional":false},',
-        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":"button[type=\\"submit\\"]","score":80,"description":"搜索按钮"}],"params":{},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"提交搜索","isOptional":false},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".paper-item","score":70,"description":"论文条目"}],"params":{"options":{"fields":["title","authors","abstract","doi","pdf_link"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取论文信息","isOptional":false}',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://scholar.example.com"},"waitFor":{"type":"NAVIGATION","timeout":' + this.navigationTimeout + '},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":' + this.navigationTimeout + ',"description":"打开学术搜索","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[name=\\"q\\"]","score":85,"description":"学术搜索框"}],"params":{"text":"machine learning"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入搜索关键词","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":"button[type=\\"submit\\"]","score":80,"description":"搜索按钮"}],"params":{},"waitFor":{"type":"NAVIGATION","timeout":' + this.navigationTimeout + '},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":' + this.navigationTimeout + ',"description":"提交搜索","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".paper-item","score":70,"description":"论文条目"}],"params":{"options":{"fields":["title","authors","abstract","doi","pdf_link"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取论文信息","isOptional":false}',
         ']}'
       );
     }
@@ -284,11 +299,11 @@ export class Planner {
       domainExamples.push(
         '// 在线工具示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://tool.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开在线工具","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":".text-input","score":80,"description":"文本输入区域"}],"params":{"text":"待处理的文本内容"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入待处理内容","isOptional":false},',
-        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".process-btn","score":85,"description":"处理按钮"}],"params":{},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"启动处理","isOptional":false},',
-        ' {"action":"WAIT","selectorCandidates":[],"params":{},"waitFor":{"type":"ELEMENT","value":".result-ready","timeout":10000},"retries":{"maxAttempts":1,"delay":2000,"backoff":false},"timeout":15000,"description":"等待处理完成","isOptional":false},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".result-output","score":75,"description":"处理结果"}],"params":{"options":{"fields":["processed_text","download_link"]}},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":10000,"description":"抽取处理结果","isOptional":false}',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://tool.example.com"},"waitFor":{"type":"NAVIGATION","timeout":' + this.navigationTimeout + '},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":' + this.navigationTimeout + ',"description":"打开在线工具","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":".text-input","score":80,"description":"文本输入区域"}],"params":{"text":"待处理的文本内容"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入待处理内容","isOptional":false},',
+        ' {"action":"CLICK","selectorCandidates":[{"type":"css","value":".process-btn","score":85,"description":"处理按钮"}],"params":{},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"启动处理","isOptional":false},',
+        ' {"action":"WAIT","selectorCandidates":[],"params":{},"waitFor":{"type":"ELEMENT","value":".result-ready","timeout":${this.elementTimeout}},"retries":{"maxAttempts":1,"delay":2000,"backoff":false},"timeout":${this.elementTimeout},"description":"等待处理完成","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".result-output","score":75,"description":"处理结果"}],"params":{"options":{"fields":["processed_text","download_link"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取处理结果","isOptional":false}',
         ']}'
       );
     }
@@ -298,10 +313,10 @@ export class Planner {
       domainExamples.push(
         '// 金融股票示例',
         '{"steps":[',
-        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://finance.example.com"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"打开金融网站","isOptional":false},',
-        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[placeholder*=\\"股票代码\\"]","score":85,"description":"股票搜索框"}],"params":{"text":"AAPL"},"waitFor":{"type":"ELEMENT","timeout":3000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":8000,"description":"输入股票代码","isOptional":false},',
-        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":30000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":30000,"description":"搜索股票","isOptional":false},',
-        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".stock-info","score":75,"description":"股票信息面板"}],"params":{"options":{"fields":["current_price","change_percent","volume","market_cap"]}},"waitFor":{"type":"ELEMENT","timeout":5000},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":15000,"description":"抽取股票数据","isOptional":false}',
+        ' {"action":"NAVIGATE","selectorCandidates":[],"params":{"url":"https://finance.example.com"},"waitFor":{"type":"NAVIGATION","timeout":' + this.navigationTimeout + '},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":' + this.navigationTimeout + ',"description":"打开金融网站","isOptional":false},',
+        ' {"action":"TYPE","selectorCandidates":[{"type":"css","value":"input[placeholder*=\\"股票代码\\"]","score":85,"description":"股票搜索框"}],"params":{"text":"AAPL"},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"输入股票代码","isOptional":false},',
+        ' {"action":"PRESS_KEY","selectorCandidates":[],"params":{"key":"Enter"},"waitFor":{"type":"NAVIGATION","timeout":' + this.navigationTimeout + '},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":' + this.navigationTimeout + ',"description":"搜索股票","isOptional":false},',
+        ' {"action":"EXTRACT","selectorCandidates":[{"type":"css","value":".stock-info","score":75,"description":"股票信息面板"}],"params":{"options":{"fields":["current_price","change_percent","volume","market_cap"]}},"waitFor":{"type":"ELEMENT","timeout":${this.elementTimeout}},"retries":{"maxAttempts":2,"delay":1000,"backoff":true},"timeout":${this.elementTimeout},"description":"抽取股票数据","isOptional":false}',
         ']}'
       );
     }
@@ -454,9 +469,10 @@ export class Planner {
     const ensureTimeout = (t: any, action: ActionType): number => {
       const num = Number.isFinite(t) ? Number(t) : undefined;
       if (typeof num === 'number' && num > 0) return num;
-      if (action === ActionType.NAVIGATE) return 30000;
-      if (action === ActionType.WAIT) return 5000;
-      return 8000;
+      
+      if (action === ActionType.NAVIGATE) return this.navigationTimeout;
+      if (action === ActionType.WAIT) return this.elementTimeout;
+      return this.elementTimeout;
     };
 
     const validateAndFixStep = (sl: any): Step => {
@@ -514,9 +530,9 @@ export class Planner {
     const riskLevel = total <= 6 && navCount <= 1 ? RiskLevel.LOW : (total <= 12 ? RiskLevel.MEDIUM : RiskLevel.HIGH);
 
     const estimatedDuration = steps.reduce((acc, s) => {
-      if (s.action === ActionType.NAVIGATE) return acc + (s.timeout || 30000);
+      if (s.action === ActionType.NAVIGATE) return acc + (s.timeout || this.navigationTimeout);
       if (s.action === ActionType.WAIT) return acc + (s.waitFor?.timeout || 3000);
-      return acc + Math.min(s.timeout || 8000, 15000);
+      return acc + Math.min(s.timeout || this.elementTimeout, this.elementTimeout);
     }, 0);
 
     // 生成元数据（简化）
@@ -560,6 +576,74 @@ export class Planner {
       estimatedDuration: plan.estimatedDuration,
       domains: domains,
       attempts: currentAttempt - 1
+    });
+
+    // 打印详细的计划内容
+    this.logger.info('=== Generated Plan Details ===');
+    this.logger.info(`Plan ID: ${plan.id}`);
+    this.logger.info(`Task ID: ${plan.taskId}`);
+    this.logger.info(`Risk Level: ${plan.riskLevel}`);
+    this.logger.info(`Estimated Duration: ${plan.estimatedDuration}ms`);
+    this.logger.info(`Total Steps: ${plan.steps.length}`);
+    this.logger.info('--- Plan Steps ---');
+    
+    plan.steps.forEach((step, index) => {
+      this.logger.info(`Step ${index + 1}:`);
+      this.logger.info(`  Action: ${step.action}`);
+      this.logger.info(`  Description: ${step.description}`);
+      
+      if (step.selectorCandidates && step.selectorCandidates.length > 0) {
+        this.logger.info(`  Selectors:`);
+        step.selectorCandidates.forEach((selector, sIndex) => {
+          this.logger.info(`    ${sIndex + 1}. ${selector.type}: "${selector.value}" (score: ${selector.score})`);
+        });
+      }
+      
+      if (step.params && Object.keys(step.params).length > 0) {
+        this.logger.info(`  Parameters: ${JSON.stringify(step.params, null, 2)}`);
+      }
+      
+      if (step.waitFor) {
+        this.logger.info(`  Wait For: ${step.waitFor.type} (timeout: ${step.waitFor.timeout}ms)`);
+      }
+      
+      if (step.retries) {
+        this.logger.info(`  Retries: max ${step.retries.maxAttempts}, delay ${step.retries.delay}ms`);
+      }
+      
+      this.logger.info(`  Timeout: ${step.timeout}ms`);
+      this.logger.info(`  Optional: ${step.isOptional}`);
+      this.logger.info('  ---');
+    });
+    
+    if (plan.meta) {
+      this.logger.info('--- Plan Metadata ---');
+      this.logger.info(`Description: ${plan.meta.description}`);
+      if (plan.meta.targetUrl) {
+        this.logger.info(`Target URL: ${plan.meta.targetUrl}`);
+      }
+      if (plan.meta.tags && plan.meta.tags.length > 0) {
+        this.logger.info(`Tags: ${plan.meta.tags.join(', ')}`);
+      }
+      if (plan.meta.warnings && plan.meta.warnings.length > 0) {
+        this.logger.info(`Warnings: ${plan.meta.warnings.join(', ')}`);
+      }
+      if (plan.meta.requirements && plan.meta.requirements.length > 0) {
+        this.logger.info(`Requirements: ${plan.meta.requirements.join(', ')}`);
+      }
+    }
+    
+    this.logger.info('=== End of Plan Details ===');
+
+    // 优化计划步骤（包括调整超时配置）
+    const optimizedSteps = this.optimizeSteps(plan.steps, context);
+    plan.steps = optimizedSteps;
+
+    // 重新分配步骤ID和顺序
+    plan.steps.forEach((step, index) => {
+      step.order = index;
+      step.id = `${taskId}_step_${index}`;
+      step.planId = plan.id;
     });
 
     return plan;
@@ -763,8 +847,21 @@ export class Planner {
     return steps.map(step => {
       const adjustedStep = { ...step };
       
-      // 应用用户偏好的超时设置
-      if (userPrefs?.timeout && step.timeout < userPrefs.timeout) {
+      // 强制应用配置的超时设置
+      if (step.action === ActionType.NAVIGATE) {
+        adjustedStep.timeout = this.navigationTimeout;
+        if (adjustedStep.waitFor) {
+          adjustedStep.waitFor.timeout = this.navigationTimeout;
+        }
+      } else {
+        adjustedStep.timeout = this.elementTimeout;
+        if (adjustedStep.waitFor) {
+          adjustedStep.waitFor.timeout = this.elementTimeout;
+        }
+      }
+      
+      // 应用用户偏好的超时设置（如果更大）
+      if (userPrefs?.timeout && userPrefs.timeout > adjustedStep.timeout) {
         adjustedStep.timeout = userPrefs.timeout;
       }
       
@@ -990,7 +1087,7 @@ export class Planner {
       params: this.convertIntentParams(intent),
       waitFor: this.generateWaitCondition(intent),
       retries: { maxAttempts: 3, delay: 1000, backoff: true },
-      timeout: 10000,
+      timeout: this.elementTimeout,
       description: intent.target?.description || `Execute ${intent.action}`,
       isOptional: false
     };
@@ -1052,9 +1149,9 @@ export class Planner {
         action: ActionType.CLICK,
         selectorCandidates: this.generateSelectorCandidates(intent),
         params: {},
-        waitFor: { type: WaitType.ELEMENT, timeout: 5000 },
+        waitFor: { type: WaitType.ELEMENT, timeout: this.elementTimeout },
         retries: { maxAttempts: 3, delay: 500, backoff: true },
-        timeout: 5000,
+        timeout: this.elementTimeout,
         description: `Click ${intent.target?.description} to focus`,
         isOptional: false
       });
@@ -1070,7 +1167,7 @@ export class Planner {
       params: this.convertIntentParams(intent),
       waitFor: this.generateWaitCondition(intent),
       retries: { maxAttempts: 3, delay: 1000, backoff: true },
-      timeout: 8000,
+      timeout: this.elementTimeout,
       description: intent.target?.description || `Execute ${intent.action}`,
       isOptional: false
     });
@@ -1114,7 +1211,7 @@ export class Planner {
    * 生成等待条件
    */
   private generateWaitCondition(intent: ParsedIntent): WaitCondition {
-    const timeout = intent.conditions?.timeout || 5000;
+    const timeout = intent.conditions?.timeout || this.elementTimeout;
     
     switch (intent.action) {
       case ActionType.NAVIGATE:

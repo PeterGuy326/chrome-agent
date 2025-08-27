@@ -228,3 +228,227 @@ Chrome Agent 支持统一的“OpenAI 兼容”调用接口：不论选择哪家
   - 您无需关心底层协议差异，始终以 chat.completions.create(...) 形式使用
 
 如需扩展更多自定义提供商，可在 src/ai/client-factory.ts 中添加分支逻辑（设置默认 baseUrl 或校验必填项），保持返回对象兼容 OpenAI SDK 接口。
+
+
+## 13. Open WebUI 集成
+
+### 概述
+
+Chrome Agent 现已启动API服务器，可以与 Open WebUI 进行集成，提供智能浏览器自动化功能。
+
+### 快速开始
+
+#### 使用 Docker Compose（推荐）
+
+1. 确保已安装 Docker 和 Docker Compose
+2. 在项目根目录运行：
+
+```bash
+docker-compose up -d
+```
+
+这将同时启动：
+- Chrome Agent 服务（端口 3000）
+- Open WebUI 界面（端口 8080）
+- 自动配置的 Pipeline 集成
+
+3. 访问 http://localhost:8080 开始使用
+
+#### 手动部署
+
+**服务状态**
+- **Chrome Agent API**: http://localhost:3000
+- **API 文档**: http://localhost:3000/docs
+- **演示页面**: http://localhost:8888/demo.html
+
+### 集成方式
+
+#### 1. 通过 Open WebUI Pipelines 集成（推荐）
+
+将 `chrome_agent_pipeline.py` 文件复制到 Open WebUI 的 pipelines 目录：
+
+```bash
+cp chrome_agent_pipeline.py /path/to/open-webui/backend/data/pipelines/
+```
+
+重启 Open WebUI 后，Pipeline 将自动加载。
+
+**Pipeline 功能特性：**
+- 🔍 自动检测浏览器相关任务
+- 🌐 URL 自动识别
+- 📊 数据提取优化
+- ❌ 智能错误处理
+- 🔄 任务状态反馈
+
+**支持的关键词：**
+- 中文: 打开网页、访问、浏览、提取数据、抓取、截图、点击、输入、搜索
+- 英文: open website, visit, browse, extract, scrape, click, input, search, screenshot
+
+#### 2. 作为 Open WebUI 的自定义工具
+
+```python
+# Chrome Agent 工具配置
+import requests
+import json
+
+class ChromeAgentTool:
+    def __init__(self):
+        self.base_url = "http://localhost:3000"
+    
+    def execute_task(self, task_description, url=None):
+        """执行浏览器自动化任务"""
+        payload = {
+            "task": task_description,
+            "url": url,
+            "format": "json"
+        }
+        
+        response = requests.post(f"{self.base_url}/api/execute", json=payload)
+        return response.json()
+    
+    def extract_data(self, url, selector=None):
+        """从网页提取数据"""
+        payload = {
+            "url": url,
+            "selector": selector
+        }
+        
+        response = requests.post(f"{self.base_url}/api/extract", json=payload)
+        return response.json()
+```
+
+### API 端点说明
+
+#### 执行任务
+```bash
+POST /api/execute
+Content-Type: application/json
+
+{
+  "task": "打开 https://example.com 并提取页面标题",
+  "url": "https://example.com",
+  "format": "json"
+}
+```
+
+#### 数据提取
+```bash
+POST /api/extract
+Content-Type: application/json
+
+{
+  "url": "https://example.com",
+  "selector": "h1",
+  "format": "json"
+}
+```
+
+#### 聊天接口（流式）
+```bash
+POST /api/chat
+Content-Type: application/json
+
+{
+  "message": "帮我打开百度搜索Python教程",
+  "stream": true
+}
+```
+
+### 使用示例
+
+#### 在 Open WebUI 中的对话示例
+
+**用户**: 帮我打开 GitHub 并搜索 "chrome automation"
+
+**Chrome Agent**: 
+✅ 任务执行完成
+- 已打开 GitHub 网站
+- 已在搜索框中输入 "chrome automation"
+- 找到 1,234 个相关仓库
+- 已截图保存到 /screenshots/github-search.png
+
+**用户**: 提取前5个仓库的名称和描述
+
+**Chrome Agent**:
+✅ 数据提取完成
+```json
+[
+  {
+    "name": "puppeteer/puppeteer",
+    "description": "Headless Chrome Node.js API",
+    "stars": "87.2k"
+  },
+  {
+    "name": "microsoft/playwright",
+    "description": "Playwright is a framework for Web Testing and Automation",
+    "stars": "64.1k"
+  }
+]
+```
+
+### 部署建议
+
+1. **Docker 部署**：可以将 Chrome Agent 和 Open WebUI 一起部署在 Docker 容器中
+2. **环境变量配置**：通过环境变量配置 Chrome Agent 的 API 地址
+3. **安全考虑**：在生产环境中添加 API 认证和访问控制
+4. **监控日志**：监控 Chrome Agent 的执行日志和性能指标
+
+### 故障排除
+
+#### Chrome Agent 问题
+```bash
+# 检查服务状态
+curl http://localhost:3000/
+
+# 查看日志
+docker logs chrome-agent  # 如果使用 Docker
+```
+
+#### Open WebUI 问题
+```bash
+# 检查容器状态
+docker ps | grep open-webui
+
+# 查看日志
+docker logs open-webui
+```
+
+## 14. 演示和测试
+
+### 集成演示页面
+
+访问 http://localhost:8888/demo.html 查看完整的集成演示，包括：
+
+- 🎯 服务状态实时监控
+- 🧪 Chrome Agent API 在线测试
+- 📋 Pipeline 功能说明
+- 🔗 快速访问链接
+
+### 立即可用功能
+
+1. **访问演示页面**: http://localhost:8888/demo.html
+2. **测试 Chrome Agent API**:
+   ```bash
+   curl -X POST http://localhost:3000/api/execute \
+     -H "Content-Type: application/json" \
+     -d '{"task": "打开 https://example.com 并提取标题"}'
+   ```
+
+### Open WebUI 完成后
+
+1. **访问 Open WebUI**: http://localhost:8080
+2. **安装 Pipeline**:
+   ```bash
+   # 将 Pipeline 文件复制到 Open WebUI
+   docker cp chrome_agent_pipeline.py open-webui:/app/backend/data/pipelines/
+   docker restart open-webui
+   ```
+3. **开始使用**: 在 Open WebUI 中输入浏览器任务，Pipeline 会自动检测并转发给 Chrome Agent
+
+## 15. 下一步
+
+1. 在 Open WebUI 中安装并配置 Chrome Agent Pipeline
+2. 测试浏览器自动化功能
+3. 根据需要调整配置和权限设置
+4. 添加更多自定义工具和功能
+5. 探索更多集成可能性

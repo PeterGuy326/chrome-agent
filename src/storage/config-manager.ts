@@ -91,7 +91,7 @@ export interface AppConfig {
   // AI/LLM 配置
   ai: {
     enabled: boolean;
-    provider: 'openai' | 'deepseek' | 'custom' | 'modelscope' | 'google';
+    provider: 'openai' | 'deepseek' | 'custom' | 'modelscope' | 'google' | 'bailian';
     model: string;
     baseUrl?: string;
     apiKey?: string;
@@ -225,6 +225,7 @@ export class ConfigManager {
           if (p === 'deepseek') return process.env.DEEPSEEK_MODEL || 'deepseek-chat';
           if (p === 'modelscope') return process.env.MODELSCOPE_MODEL || process.env.AI_MODEL || 'gpt-3.5-turbo';
           if (p === 'google') return process.env.GOOGLE_MODEL || process.env.GEMINI_MODEL || process.env.AI_MODEL || 'gemini-1.5-flash';
+          if (p === 'bailian') return process.env.BAILIAN_MODEL || process.env.AI_MODEL || 'qwen-plus';
           return process.env.OPENAI_MODEL || process.env.AI_MODEL || 'gpt-3.5-turbo';
         })(),
         baseUrl: (() => {
@@ -232,6 +233,7 @@ export class ConfigManager {
           if (p === 'deepseek') return process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
           if (p === 'modelscope') return process.env.MODELSCOPE_BASE_URL;
           if (p === 'google') return process.env.GOOGLE_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta';
+          if (p === 'bailian') return process.env.BAILIAN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
           return process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
         })(),
         apiKey: (() => {
@@ -239,6 +241,7 @@ export class ConfigManager {
           if (p === 'deepseek') return process.env.DEEPSEEK_API_KEY;
           if (p === 'modelscope') return process.env.MODELSCOPE_API_KEY || process.env.AI_API_KEY;
           if (p === 'google') return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.AI_API_KEY;
+          if (p === 'bailian') return process.env.BAILIAN_API_KEY || process.env.AI_API_KEY;
           return process.env.OPENAI_API_KEY || process.env.AI_API_KEY;
         })(),
         temperature: parseFloat(process.env.AI_TEMPERATURE || '0.2'),
@@ -251,6 +254,7 @@ export class ConfigManager {
           if (process.env.AI_INTENT_MODEL) return process.env.AI_INTENT_MODEL;
           if (p === 'modelscope') return 'deepseek-ai/DeepSeek-V2-Lite-Chat';
           if (p === 'google') return process.env.GOOGLE_INTENT_MODEL || process.env.GEMINI_INTENT_MODEL || 'gemini-1.5-flash';
+          if (p === 'bailian') return process.env.BAILIAN_INTENT_MODEL || 'qwen-turbo';
           return undefined;
         })(),
         plannerModel: (() => {
@@ -258,6 +262,7 @@ export class ConfigManager {
           if (process.env.AI_PLANNER_MODEL) return process.env.AI_PLANNER_MODEL;
           if (p === 'modelscope') return 'deepseek-ai/DeepSeek-V3.1';
           if (p === 'google') return process.env.GOOGLE_PLANNER_MODEL || process.env.GEMINI_PLANNER_MODEL || 'gemini-1.5-pro';
+          if (p === 'bailian') return process.env.BAILIAN_PLANNER_MODEL || 'qwen-plus';
           return undefined;
         })(),
         // 新增默认 Planner 配置
@@ -453,7 +458,7 @@ export class ConfigManager {
 
       // AI/LLM 配置验证
       { path: 'ai.enabled', type: 'boolean', required: true },
-      { path: 'ai.provider', type: 'string', required: true, enum: ['openai', 'deepseek', 'custom', 'modelscope', 'google'] },
+      { path: 'ai.provider', type: 'string', required: true, enum: ['openai', 'deepseek', 'custom', 'modelscope', 'google', 'bailian'] },
       { path: 'ai.model', type: 'string', required: true },
       { path: 'ai.temperature', type: 'number', required: true, min: 0, max: 2 },
       { path: 'ai.maxTokens', type: 'number', required: true, min: 1, max: 200000 },
