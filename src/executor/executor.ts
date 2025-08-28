@@ -531,22 +531,26 @@ export class Executor {
 
     console.log('等待元素可点击...');
     // 等待元素可点击（增强版检查）
-    await context.page.waitForFunction(
-      (element) => {
-        const el = element as Element;
-        const rect = el.getBoundingClientRect();
-        const style = window.getComputedStyle(el);
-        return rect.width > 0 && rect.height > 0 &&
-          style.visibility !== 'hidden' &&
-          style.display !== 'none' &&
-          style.opacity !== '0' &&
-          !el.hasAttribute('disabled');
-      },
-      { timeout: this.config.elementTimeout },
-      selectorResult.element
-    );
-
-    console.log('元素已可点击');
+    try {
+      await context.page.waitForFunction(
+        (element) => {
+          const el = element as Element;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0 &&
+            style.visibility !== 'hidden' &&
+            style.display !== 'none' &&
+            style.opacity !== '0' &&
+            !el.hasAttribute('disabled');
+        },
+        { timeout: this.config.elementTimeout },
+        selectorResult.element
+      );
+      console.log('元素已可点击');
+    } catch (waitError) {
+      console.log('等待元素可点击超时，但继续执行...', (waitError as Error).message);
+      this.logger.warn('Element clickable wait timeout, continuing...', waitError);
+    }
 
     // 重试机制的点击
     let clicked = false;
@@ -611,20 +615,27 @@ export class Executor {
     // 确保元素可见并可交互
     console.log('正在等待元素可见并可交互...');
     await selectorResult.element.scrollIntoView();
-    await context.page.waitForFunction(
-      (element) => {
-        const el = element as Element;
-        const rect = el.getBoundingClientRect();
-        const style = window.getComputedStyle(el);
-        return rect.width > 0 && rect.height > 0 &&
-          style.visibility !== 'hidden' &&
-          style.display !== 'none' &&
-          style.opacity !== '0';
-      },
-      { timeout: this.config.elementTimeout },
-      selectorResult.element
-    );
-    console.log('元素已可见并可交互');
+    
+    // 使用更宽松的等待条件，并增加超时处理
+    try {
+      await context.page.waitForFunction(
+        (element) => {
+          const el = element as Element;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0 &&
+            style.visibility !== 'hidden' &&
+            style.display !== 'none' &&
+            style.opacity !== '0';
+        },
+        { timeout: this.config.elementTimeout },
+        selectorResult.element
+      );
+      console.log('元素已可见并可交互');
+    } catch (waitError) {
+      console.log('等待元素可见超时，但继续执行...', (waitError as Error).message);
+      this.logger.warn('Element visibility wait timeout, continuing...', waitError);
+    }
 
     console.log('正在聚焦输入框...');
     // 多重方式聚焦元素
@@ -1171,7 +1182,7 @@ export class Executor {
           context.currentUrl = context.page.url();
           console.log(`导航等待结束，当前URL: ${context.currentUrl}, waitForNavigation是否成功: ${result}`);
         } catch (error) {
-          console.log('导航等待出现异常，继续执行...', error.message);
+          console.log('导航等待出现异常，继续执行...', (error as Error).message);
           this.logger.warn('Navigation wait exception, continuing...', error);
           context.currentUrl = context.page.url();
         }
