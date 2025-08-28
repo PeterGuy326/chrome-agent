@@ -54,15 +54,18 @@ export class AIIntentParser {
       if (!this.client) {
         await this.initializeClient();
       }
+      
+      // 如果AI客户端仍然不可用，直接使用回退策略
       if (!this.client) {
-        throw new Error('AI client not initialized or disabled');
+        this.logger.warn('AI client not available, using fallback parsing');
+        return await this.fallbackParse(text, context);
       }
 
        const cfg = getAIClientManager().getConfig();
        const selectedModel = cfg.intentModel || cfg.model;
        if (!selectedModel) {
-         this.logger.warn('No intentModel/model configured; AI intent parsing cannot proceed.');
-         throw new Error('AI model not configured for intent parsing');
+         this.logger.warn('No intentModel/model configured; using fallback parsing.');
+         return await this.fallbackParse(text, context);
        }
 
        const prompt = this.buildPrompt(text, context);
@@ -101,8 +104,9 @@ export class AIIntentParser {
   
        return intents;
      } catch (error) {
-      this.logger.error('AI intent parsing failed', error);
-      throw error;
+      this.logger.error('AI intent parsing failed, falling back to rule-based parsing', error);
+      // AI解析失败时，使用回退策略
+      return await this.fallbackParse(text, context);
      }
    }
 
@@ -345,12 +349,12 @@ export class AIIntentParser {
   }
 
   /**
-   * 回退解析方法（使用简单规则）
+   * 回退解析方法（使用简单规则，增强版）
    */
   private async fallbackParse(text: string, context?: any): Promise<ParsedIntent[]> {
     const normalizedText = text.toLowerCase().trim();
     
-    // 简单的关键词匹配
+    // 增强的关键词匹配和选择器生成
     if (normalizedText.includes('打开') || normalizedText.includes('访问') || normalizedText.includes('跳转')) {
       const urlMatch = text.match(/(https?:\/\/[^\s]+)/);
       return [{
@@ -366,16 +370,15 @@ export class AIIntentParser {
     }
 
     if (normalizedText.includes('点击')) {
+      // 提取点击目标
+      let targetText = text.replace(/点击|按钮|链接/g, '').trim();
+      
       return [{
         action: ActionType.CLICK,
         target: {
           type: 'element',
-          description: text,
-          selectors: [{
-            type: SelectorType.TEXT,
-            value: text.replace(/点击|按钮|链接/g, '').trim(),
-            confidence: 0.5
-          }]
+          description: targetText || '可点击元素',
+          selectors: this.generateClickSelectors(targetText)
         },
         confidence: 0.5,
         context: {
@@ -385,21 +388,41 @@ export class AIIntentParser {
     }
 
     if (normalizedText.includes('输入') || normalizedText.includes('填写')) {
+      // 提取要输入的文本
+      let inputText = text.replace(/输入|填写/, '').trim();
+      
       return [{
         action: ActionType.TYPE,
         target: {
           type: 'element',
           description: '输入框',
-          selectors: [{
-            type: SelectorType.TAG,
-            value: 'input',
-            confidence: 0.5
-          }]
+          selectors: this.generateInputSelectors()
         },
         parameters: {
-          text: text.replace(/输入|填写/g, '').trim()
+          text: inputText
         },
         confidence: 0.5,
+        context: {
+          userGoal: text
+        }
+      }];
+    }
+
+    if (normalizedText.includes('搜索')) {
+      // 提取搜索词
+      let searchText = text.replace(/搜索/, '').trim();
+      
+      return [{
+        action: ActionType.TYPE,
+        target: {
+          type: 'element',
+          description: '搜索框',
+          selectors: this.generateSearchSelectors()
+        },
+        parameters: {
+          text: searchText
+        },
+        confidence: 0.6,
         context: {
           userGoal: text
         }
@@ -417,6 +440,67 @@ export class AIIntentParser {
         userGoal: text
       }
     }];
+  }
+
+  /**
+   * 生成点击元素的选择器
+   */
+  private generateClickSelectors(targetText: string): Array<{ type: SelectorType; value: string; confidence: number }> {
+    const selectors = [];
+    
+    if (targetText) {
+      // 文本选择器
+      selectors.push({
+        type: SelectorType.TEXT,
+        value: targetText,
+        confidence: 0.8
+      });
+      
+      // 部分文本匹配的XPath
+      selectors.push({
+        type: SelectorType.XPATH,
+        value: `//*[contains(text(), "${targetText}")]`,
+        confidence: 0.7
+      });
+    }
+    
+    // 通用按钮和链接选择器
+    selectors.push(
+      { type: SelectorType.CSS, value: 'button', confidence: 0.4 },
+      { type: SelectorType.CSS, value: 'a', confidence: 0.4 },
+      { type: SelectorType.CSS, value: '[role="button"]', confidence: 0.4 },
+      { type: SelectorType.CSS, value: 'input[type="submit"]', confidence: 0.3 },
+      { type: SelectorType.CSS, value: 'input[type="button"]', confidence: 0.3 }
+    );
+    
+    return selectors;
+  }
+
+  /**
+   * 生成输入框的选择器
+   */
+  private generateInputSelectors(): Array<{ type: SelectorType; value: string; confidence: number }> {
+    return [
+      { type: SelectorType.CSS, value: 'input:not([type="hidden"]):not([type="submit"]):not([type="button"])', confidence: 0.8 },
+      { type: SelectorType.CSS, value: 'textarea', confidence: 0.8 },
+      { type: SelectorType.CSS, value: 'input[type="text"]', confidence: 0.7 },
+      { type: SelectorType.CSS, value: 'input[type="email"]', confidence: 0.6 },
+      { type: SelectorType.CSS, value: 'input[type="password"]', confidence: 0.6 },
+      { type: SelectorType.CSS, value: '[contenteditable="true"]', confidence: 0.5 }
+    ];
+  }
+
+  /**
+   * 生成搜索框的选择器
+   */
+  private generateSearchSelectors(): Array<{ type: SelectorType; value: string; confidence: number }> {
+    return [
+      { type: SelectorType.CSS, value: 'input[type="search"]', confidence: 0.9 },
+      { type: SelectorType.CSS, value: '[placeholder*="搜索"], [placeholder*="search"]', confidence: 0.8 },
+      { type: SelectorType.CSS, value: '[name*="search"], [id*="search"]', confidence: 0.7 },
+      { type: SelectorType.CSS, value: '.search-input, .search-box', confidence: 0.6 },
+      { type: SelectorType.CSS, value: 'input[type="text"]', confidence: 0.4 }
+    ];
   }
 }
 

@@ -42,12 +42,12 @@ export class ApiServer {
 
   constructor(config: Partial<ServerConfig> = {}) {
     this.config = {
-      port: 8080,
-      host: '0.0.0.0',
+      port: parseInt(process.env.PORT || '3000'),
+      host: process.env.HOST || '0.0.0.0',
       corsOrigins: ['*'],
       rateLimit: {
         windowMs: 15 * 60 * 1000, // 15分钟
-        max: 100 // 限制每个IP 15分钟内最多100个请求
+        max: 1000 // 增加速率限制，适合开发测试
       },
       enableMetrics: true,
       enableLogging: true,

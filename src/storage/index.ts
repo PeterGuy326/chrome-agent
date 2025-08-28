@@ -139,7 +139,18 @@ export async function quickSetConfig(config: AppConfig): Promise<void> {
 export async function quickGetConfigValue<T>(path: string): Promise<T | undefined> {
   const { getDefaultConfigManager } = await import('./config-manager');
   const configManager = getDefaultConfigManager();
-  return await configManager.get<T>(path);
+  
+  // 确保配置已加载
+  try {
+    return await configManager.get<T>(path);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Configuration not loaded')) {
+      // 配置未加载，先加载配置
+      await configManager.load();
+      return await configManager.get<T>(path);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -148,7 +159,19 @@ export async function quickGetConfigValue<T>(path: string): Promise<T | undefine
 export async function quickSetConfigValue<T>(path: string, value: T): Promise<void> {
   const { getDefaultConfigManager } = await import('./config-manager');
   const configManager = getDefaultConfigManager();
-  await configManager.set(path, value);
+  
+  // 确保配置已加载
+  try {
+    await configManager.set(path, value);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Configuration not loaded')) {
+      // 配置未加载，先加载配置
+      await configManager.load();
+      await configManager.set(path, value);
+    } else {
+      throw error;
+    }
+  }
 }
 
 /**

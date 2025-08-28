@@ -58,8 +58,8 @@ export class Planner {
   private strategies: Map<string, PlanningStrategy> = new Map();
   private logger = getDefaultLogger();
   private eventBus = getDefaultEventBus();
-  private navigationTimeout: number = 60000;
-  private elementTimeout: number = 15000;
+  private navigationTimeout: number = 30000;
+  private elementTimeout: number = 5000;
 
   constructor() {
     this.initializeDefaultStrategies();
