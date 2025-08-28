@@ -8,11 +8,14 @@ import { getDefaultLogger } from '../../core/logger';
 import { getDefaultEventBus } from '../../core/event-bus';
 import { getDefaultTaskManager } from '../../core/task-manager';
 // AI-only 模式：不再使用传统 IntentParser
-import { initializeAI } from '../../ai/config';
+import { initializeAI, getAIClientManager } from '../../ai/config';
 import { getDefaultAIIntentParser } from '../../ai/intent-parser';
 import { getDefaultPlanner } from '../../planner';
 import { getDefaultExecutor } from '../../executor';
+import { getDefaultAISummarizer } from '../../ai/summarizer';
+import { getDefaultOptimizedAISummarizer } from '../../ai/optimized-summarizer';
 import { EventType, TaskStatus } from '../../core/types';
+import { containsEnglish, translateToChinese } from '../../utils/translation-utils';
 
 const router = Router();
 const logger = getDefaultLogger();
@@ -263,6 +266,8 @@ async function processUserRequest(userInput: string, requestId: string) {
     const intentParser = getDefaultAIIntentParser();
     const planner = getDefaultPlanner();
     const executor = getDefaultExecutor();
+    const summarizer = getDefaultAISummarizer();
+    const optimizedSummarizer = getDefaultOptimizedAISummarizer();
     
     // 1. 解析用户意图
     logger.info('Parsing user intent...');
@@ -290,10 +295,76 @@ async function processUserRequest(userInput: string, requestId: string) {
     // 6. 生成响应
     let response = '';
     if (executionResult.success) {
-      response = '任务执行成功！\n\n';
-      response += `执行时间: ${executionResult.duration}ms\n`;
-      response += `最终页面: ${executionResult.finalUrl}\n`;
-      response += `执行了 ${executionResult.totalSteps} 个步骤，成功 ${executionResult.successfulSteps} 个`;
+      // 使用优化的AI总结器生成响应
+      try {
+        // 获取执行上下文中的页面
+        const page = executor['contexts'].get(plan.id)?.page;
+        let pageContent = '';
+        if (page) {
+          // 提取页面内容
+          pageContent = await executor.extractPageContent(page);
+        }
+        
+        // 生成优化的总结响应
+        response = await executor.generateOptimizedSummary(plan, executionResult, pageContent);
+        
+        // 检查响应内容是否包含英文，如果是则翻译为中文
+        if (containsEnglish(response)) {
+          response = await translateToChinese(response);
+        }
+        
+        // 将任务执行成功的消息以特殊样式显示
+        const durationMatch = response.match(/任务执行耗时[：:]([\d,]+)ms/);
+        if (durationMatch) {
+          const duration = durationMatch[1];
+          // 移除原消息中的耗时信息
+          response = response.replace(/任务执行耗时[：:][\d,]+ms\s*/g, '');
+          // 添加特殊样式的耗时信息（卡片样式）
+          response += `\n\n[卡片样式: 任务执行成功，耗时${duration}ms]`;
+        }
+      } catch (summaryError) {
+        logger.warn('Failed to generate optimized AI summary, using default response', { error: summaryError });
+        // 如果优化总结失败，使用默认响应
+        response = '任务执行成功！\n\n';
+        response += `执行时间: ${executionResult.duration}ms\n`;
+        response += `最终页面: ${executionResult.finalUrl}\n`;
+        response += `执行了 ${executionResult.totalSteps} 个步骤，成功 ${executionResult.successfulSteps} 个\n\n`;
+        
+        // 如果是搜索或导航任务，尝试提取页面内容并进行AI总结
+        if (executionResult.finalUrl && executionResult.metadata?.executionContext?.endTime) {
+          try {
+            // 获取执行上下文中的页面
+            const page = executor['contexts'].get(plan.id)?.page;
+            if (page) {
+              // 提取页面内容
+              const pageContent = await executor.extractPageContent(page);
+              if (pageContent && pageContent.length > 100) {
+                // 使用AI进行总结
+                const summaryResult = await summarizer.summarize({
+                  content: pageContent,
+                  type: 'webpage',
+                  maxLength: 300,
+                  language: '中文'
+                });
+                
+                if (summaryResult.success && summaryResult.summary) {
+                  response += '页面内容总结：\n';
+                  response += summaryResult.summary + '\n\n';
+                  
+                  if (summaryResult.keyPoints && summaryResult.keyPoints.length > 0) {
+                    response += '关键要点：\n';
+                    summaryResult.keyPoints.forEach((point, index) => {
+                      response += `${index + 1}. ${point}\n`;
+                    });
+                  }
+                }
+              }
+            }
+          } catch (summaryError) {
+            logger.warn('Failed to generate AI summary', { error: summaryError });
+          }
+        }
+      }
     } else {
       response = `任务执行失败: ${executionResult.error || '未知错误'}`;
     }
@@ -335,6 +406,8 @@ async function processUserRequestStreaming(
     const intentParser = getDefaultAIIntentParser();
     const planner = getDefaultPlanner();
     const executor = getDefaultExecutor();
+    const summarizer = getDefaultAISummarizer();
+    const optimizedSummarizer = getDefaultOptimizedAISummarizer();
     
     // 1. 解析用户意图
     onChunk('正在解析用户意图...\n');
@@ -367,6 +440,70 @@ async function processUserRequestStreaming(
       onChunk(`\n执行时间: ${executionResult.duration}ms\n`);
       onChunk(`最终页面: ${executionResult.finalUrl}\n`);
       onChunk(`执行了 ${executionResult.totalSteps} 个步骤，成功 ${executionResult.successfulSteps} 个\n`);
+      
+      // 使用优化的AI总结器生成响应
+      try {
+        // 获取执行上下文中的页面
+        const page = executor['contexts'].get(plan.id)?.page;
+        let pageContent = '';
+        if (page) {
+          onChunk('\n正在提取页面内容...\n');
+          // 提取页面内容
+          pageContent = await executor.extractPageContent(page);
+        }
+        
+        // 生成优化的总结响应
+        const optimizedResponse = await executor.generateOptimizedSummary(plan, executionResult, pageContent);
+        onChunk('\n' + optimizedResponse + '\n');
+      } catch (summaryError) {
+        logger.warn('Failed to generate optimized AI summary, using default response', { error: summaryError });
+        onChunk('\n任务执行成功！\n');
+        
+        // 如果优化总结失败，使用默认响应
+        // 如果是搜索或导航任务，尝试提取页面内容并进行AI总结
+        if (executionResult.finalUrl && executionResult.metadata?.executionContext?.endTime) {
+          try {
+            // 获取执行上下文中的页面
+            const page = executor['contexts'].get(plan.id)?.page;
+            if (page) {
+              onChunk('\n正在提取页面内容...\n');
+              
+              // 提取页面内容
+              const pageContent = await executor.extractPageContent(page);
+              if (pageContent && pageContent.length > 100) {
+                onChunk('正在生成AI总结...\n');
+                
+                // 使用AI进行总结
+                const summaryResult = await summarizer.summarize({
+                  content: pageContent,
+                  type: 'webpage',
+                  maxLength: 300,
+                  language: '中文'
+                });
+                
+                if (summaryResult.success && summaryResult.summary) {
+                  onChunk('\n页面内容总结：\n');
+                  onChunk(summaryResult.summary + '\n\n');
+                  
+                  if (summaryResult.keyPoints && summaryResult.keyPoints.length > 0) {
+                    onChunk('关键要点：\n');
+                    summaryResult.keyPoints.forEach((point, index) => {
+                      onChunk(`${index + 1}. ${point}\n`);
+                    });
+                  }
+                } else {
+                  onChunk('页面内容提取完成，但未能生成总结。\n');
+                }
+              } else {
+                onChunk('页面内容较短，无需总结。\n');
+              }
+            }
+          } catch (summaryError) {
+            logger.warn('Failed to generate AI summary', { error: summaryError });
+            onChunk('页面内容总结生成失败。\n');
+          }
+        }
+      }
     } else {
       onChunk(`\n❌ 任务执行失败: ${executionResult.error || '未知错误'}\n`);
     }

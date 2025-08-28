@@ -20,6 +20,9 @@ import { getDefaultLogger } from '../core/logger';
 import { getDefaultEventBus } from '../core/event-bus';
 import { getDefaultErrorHandler, ErrorCode } from '../core/error-handler';
 import { EventType } from '../core/types';
+import { getDefaultOptimizedAISummarizer } from '../ai/optimized-summarizer';
+import { getDefaultAISummarizer } from '../ai/summarizer';
+import { containsEnglish, translateToChinese } from '../utils/translation-utils';
 
 // 添加延迟函数
 function delay(ms: number): Promise<void> {
@@ -917,6 +920,212 @@ export class Executor {
       data,
       extracted: true
     };
+  }
+
+  /**
+   * 提取页面主要内容
+   */
+  async extractPageContent(page: Page): Promise<string> {
+    try {
+      // 等待页面加载完成
+      await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
+      
+      // 提取页面主要内容
+      const content = await page.evaluate(() => {
+        // 移除脚本和样式标签
+        const scripts = document.querySelectorAll('script, style');
+        scripts.forEach(el => el.remove());
+        
+        // 尝试获取文章内容区域
+        const contentSelectors = [
+          'article',
+          '.content',
+          '.article-content',
+          '.post-content',
+          '.entry-content',
+          '.main-content',
+          '#content',
+          '.container',
+          'main',
+          '.body',
+          '.text',
+          'body'
+        ];
+        
+        for (const selector of contentSelectors) {
+          const element = document.querySelector(selector);
+          if (element) {
+            return (element as HTMLElement).innerText?.trim() || '';
+          }
+        }
+        
+        // 如果都没找到，返回整个body的文本
+        return (document.body as HTMLElement).innerText?.trim() || '';
+      });
+      
+      // 限制内容长度以避免过大
+      return content.substring(0, 10000);
+    } catch (error) {
+      this.logger.warn('Failed to extract page content', { error });
+      return '';
+    }
+  }
+
+  /**
+   * 判断任务类型
+   */
+  private determineTaskType(plan: Plan, executionResult: ExecutionResult): string {
+    // 根据计划中的动作类型判断任务类型
+    const actions = plan.steps.map(step => step.action);
+    
+    // 检查是否有数据提取动作
+    if (actions.includes(ActionType.EXTRACT)) {
+      return 'data_extraction';
+    }
+    
+    // 检查是否主要是导航动作
+    const navigationActions = actions.filter(action => 
+      action === ActionType.NAVIGATE || 
+      action === ActionType.WAIT
+    );
+    if (navigationActions.length > actions.length / 2) {
+      return 'navigation';
+    }
+    
+    // 检查是否是搜索任务
+    const hasSearch = plan.steps.some(step => 
+      (step.action === ActionType.TYPE && step.description?.includes('搜索')) ||
+      (step.action === ActionType.TYPE && step.description?.includes('search')) ||
+      (step.action === ActionType.CLICK && step.description?.includes('搜索')) ||
+      (step.action === ActionType.CLICK && step.description?.includes('search'))
+    );
+    if (hasSearch) {
+      return 'search';
+    }
+    
+    // 检查是否是表单填写任务
+    const formActions = actions.filter(action => 
+      action === ActionType.TYPE || 
+      action === ActionType.SELECT || 
+      action === ActionType.CLICK
+    );
+    if (formActions.length >= actions.length * 0.6) {
+      return 'form_filling';
+    }
+    
+    // 检查是否是操作执行任务
+    const operationActions = actions.filter(action => 
+      action === ActionType.CLICK || 
+      action === ActionType.PRESS_KEY || 
+      action === ActionType.SCROLL
+    );
+    if (operationActions.length > 0) {
+      return 'operation_execution';
+    }
+    
+    return 'unknown';
+  }
+
+  /**
+   * 生成优化的执行结果摘要
+   */
+  async generateOptimizedSummary(
+    plan: Plan, 
+    executionResult: ExecutionResult,
+    pageContent?: string
+  ): Promise<string> {
+    try {
+      const taskType = this.determineTaskType(plan, executionResult);
+      const userIntent = plan.meta?.description || '执行任务';
+      
+      // 使用优化版AI总结器生成响应
+      const optimizedSummarizer = getDefaultOptimizedAISummarizer();
+      
+      const summaryRequest = {
+        executionResult,
+        taskType: taskType as any,
+        userIntent,
+        pageContent,
+        maxLength: 300,
+        language: '中文'
+      };
+      
+      const summaryResult = await optimizedSummarizer.generateOptimizedSummary(summaryRequest);
+      
+      if (summaryResult.success) {
+        // 检查响应内容是否包含英文，如果是则翻译为中文
+        let response = summaryResult.response;
+        
+        // 检查是否包含英文内容
+        if (containsEnglish(response)) {
+          response = await translateToChinese(response);
+        }
+        
+        // 将任务执行成功的消息以特殊样式显示
+        const durationMatch = response.match(/任务执行耗时[：:]([\d,]+)ms/);
+        if (durationMatch) {
+          const duration = durationMatch[1];
+          // 移除原消息中的耗时信息
+          response = response.replace(/任务执行耗时[：:][\d,]+ms\s*/g, '');
+          // 添加特殊样式的耗时信息（卡片样式）
+          response += `\n\n[卡片样式: 任务执行成功，耗时${duration}ms]`;
+        }
+        
+        return response;
+      } else {
+        // 如果AI总结失败，使用默认响应
+        return this.generateDefaultResponse(plan, executionResult, taskType, userIntent);
+      }
+    } catch (error) {
+      this.logger.warn('Failed to generate optimized summary', { error });
+      // 如果优化总结失败，使用默认响应
+      const taskType = this.determineTaskType(plan, executionResult);
+      const userIntent = plan.meta?.description || '执行任务';
+      return this.generateDefaultResponse(plan, executionResult, taskType, userIntent);
+    }
+  }
+
+  /**
+   * 生成默认响应
+   */
+  private generateDefaultResponse(
+    plan: Plan, 
+    executionResult: ExecutionResult,
+    taskType: string,
+    userIntent: string
+  ): string {
+    let response = '';
+    
+    switch (taskType) {
+      case 'data_extraction':
+        response = '数据获取任务执行成功！\n\n';
+        response += `已成功访问目标页面并提取相关内容。\n`;
+        break;
+        
+      case 'operation_execution':
+        response = '操作执行成功！\n\n';
+        response += `已按照您的要求完成相关操作：${userIntent}\n`;
+        break;
+        
+      case 'search':
+        response = '搜索任务执行成功！\n\n';
+        response += `已为您执行搜索操作："${userIntent}"\n`;
+        break;
+        
+      case 'navigation':
+        response = '页面访问成功！\n\n';
+        response += `已成功访问页面：${executionResult.finalUrl}\n`;
+        break;
+        
+      default:
+        response = '任务执行成功！\n\n';
+        response += `已按照您的要求完成操作：${userIntent}\n`;
+    }
+    
+    response += `任务执行耗时：${executionResult.duration}ms\n`;
+    response += `执行了 ${executionResult.totalSteps} 个步骤，成功 ${executionResult.successfulSteps} 个`;
+    
+    return response;
   }
 
   /**

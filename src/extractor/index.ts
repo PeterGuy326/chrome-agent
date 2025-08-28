@@ -11,6 +11,19 @@ export {
   createExtractor
 } from './extractor';
 
+// 增强数据提取器
+export {
+  EnhancedDataExtractor,
+  DataExtractionService
+} from './enhanced-extractor';
+
+// 增强数据提取器类型和接口
+export type {
+  EnhancedExtractionConfig,
+  SmartExtractionRequest,
+  EnhancedExtractionResult
+} from './enhanced-extractor';
+
 // 抽取器类型和接口
 export type {
   ExtractionRule,
